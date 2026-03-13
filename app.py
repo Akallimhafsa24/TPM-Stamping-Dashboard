@@ -564,7 +564,7 @@ def check_missing(df: pd.DataFrame) -> list[str]:
 
 
 def fmt(val, decimals=2):
-    """Formate un nombre pour affichage carte KPI."""
+    """Format a number for KPI card display."""
     if pd.isna(val): return "—"
     if val >= 1_000_000: return f"{val/1_000_000:.{decimals}f}M"
     if val >= 1000:      return f"{val/1000:.{decimals}f}k"
@@ -584,7 +584,7 @@ def dl_png(fig, filename, label="⬇ Download PNG"):
                            file_name=filename, mime="image/png",
                            use_container_width=True)
     except Exception:
-        st.caption("_`pip install kaleido` pour activer l'export PNG_")
+        st.caption("_`pip install kaleido` to enable PNG export_")
 
 
 def export_excel(df: pd.DataFrame, kpi: dict) -> bytes:
@@ -804,14 +804,42 @@ if missing:
     )
     st.stop()
 
-# ── Ajouter colonnes qualification si absentes ──
-for col, default in [("Shift", ""), ("Key Failure", ""), ("User ID", "")]:
-    if col not in df_raw.columns:
-        df_raw[col] = default
+# ── Add qualification columns if absent — User ID pre-filled with "TE" prefix ──
+_QUAL_COLS_DEFAULTS = [
+    ("User ID",          "TE"),
+    ("Shift",            ""),
+    ("Key Failure",      ""),
+    ("Issue Description",""),
+    ("Action Taken",     ""),
+    ("Spare Part Ref",   ""),
+    ("Qty",              0),
+    ("Unit Price (€)",   0.0),
+    ("Total Part Cost",  0.0),
+]
+for _qc, _qd in _QUAL_COLS_DEFAULTS:
+    if _qc not in df_raw.columns:
+        df_raw[_qc] = _qd
 
 # ── Initialiser session_state.edited_df ──
 if st.session_state.edited_df is None:
     st.session_state.edited_df = df_raw.copy()
+
+# ── Ensure existing blank User IDs get "TE" prefix & new cost cols exist ──
+_edf = st.session_state.edited_df
+if "User ID" in _edf.columns:
+    _blank_uid = _edf["User ID"].astype(str).str.strip().isin(["", "nan", "None"])
+    _edf.loc[_blank_uid, "User ID"] = "TE"
+# Add any new cost columns that did not exist in saved state
+for _qc, _qd in _QUAL_COLS_DEFAULTS:
+    if _qc not in _edf.columns:
+        _edf[_qc] = _qd
+# Recalculate Total Part Cost
+if "Qty" in _edf.columns and "Unit Price (€)" in _edf.columns:
+    _edf["Total Part Cost"] = (
+        pd.to_numeric(_edf["Qty"], errors="coerce").fillna(0) *
+        pd.to_numeric(_edf["Unit Price (€)"], errors="coerce").fillna(0.0)
+    ).round(2)
+st.session_state.edited_df = _edf
 
 # ── Utiliser la version éditée (préserve les qualifications utilisateur) ──
 df_raw = st.session_state.edited_df.copy()
@@ -1042,8 +1070,8 @@ if not has_mtbf:
 #  NAVIGATION — TABS (exclusif)
 # ─────────────────────────────────────────────────────────────────────────────
 tab_kpi, tab_qual = st.tabs([
-    "📊  Analyse des Performances (KPIs)",
-    "📝  Qualification des Arrêts",
+    "📊  Performance Analysis (KPIs)",
+    "📝  Stops Qualification",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1069,8 +1097,15 @@ with tab_kpi:
     """, unsafe_allow_html=True)
 
     # ── KPI Cards ──────────────────────────────────────────────────────────────
+    # Compute total maintenance cost from session_state (live)
+    _total_cost = 0.0
+    if st.session_state.edited_df is not None and "Total Part Cost" in st.session_state.edited_df.columns:
+        _total_cost = float(
+            pd.to_numeric(st.session_state.edited_df["Total Part Cost"], errors="coerce")
+            .fillna(0).sum())
+
     st.markdown('<div class="te-section">Main KPIs</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     for col, icon, label, value, unit in [
         (c1, "⚡", "AVAILABILITY",
          f"{dispo}%", f"{'MTBF-based' if has_mtbf else 'Status-based'}"),
@@ -1081,10 +1116,15 @@ with tab_kpi:
          "Time between failures" if has_mtbf else "Column absent"),
         (c4, "⚠",  "TOTAL STOPS",
          f"{nb_arrets}", f"Out of {len(df):,} events"),
+        (c5, "💰", "TOTAL MAINT. COST",
+         f"€ {_total_cost:,.2f}", "Spare parts (qualified stops)"),
     ]:
         with col:
+            _cstyle = ("background:linear-gradient(135deg,#1a3a1a,#0d200d);"
+                       "border:1.5px solid #27AE60"
+                       if icon == "💰" and _total_cost > 0 else "")
             st.markdown(f"""
-            <div class="kpi-card">
+            <div class="kpi-card" style="{_cstyle}">
               <div class="kpi-icon">{icon}</div>
               <div class="kpi-label">{label}</div>
               <div class="kpi-value">{value}</div>
@@ -1096,7 +1136,7 @@ with tab_kpi:
     # ═══════════════════════════════════════════════════════════════════════════
     #  SECTION — ÉVOLUTION DES PERFORMANCES (hebdo + mensuel)
     # ═══════════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="te-section">📈 Évolution des Performances</div>',
+    st.markdown('<div class="te-section">📈 Performance Trend</div>',
                 unsafe_allow_html=True)
 
     # ── Extraction des time features ──────────────────────────────────────────
@@ -1119,7 +1159,7 @@ with tab_kpi:
 
         # ── Agrégat générique — trié par clé numérique ────────────────────────
         def _te_agg(lbl_col, sort_key):
-            """Agrège par période, trie par clé numérique, retourne df propre."""
+            """Aggregate by period, sort by numeric key, return clean df."""
             agg = _df_t.groupby(lbl_col, as_index=False).agg(
                 _sort_key =(sort_key,  "first"),   # valeur numérique pour tri
                 mttr_sum  =("mttr_h",  "sum"),
@@ -1216,7 +1256,7 @@ with tab_kpi:
         def _te_recap_table(df_agg, periode_col):
             _tbl = df_agg.rename(columns={
                 "label":"label_raw","mttr_h":"MTTR (h)","mtbf_h":"MTBF (h)",
-                "dispo":"Disponibilité (%)","nb_stops":"Arrêts","nb_events":"Events"})
+                "dispo":"Availability (%)", "nb_stops":"Stops", "nb_events":"Events"})
             _tbl.insert(0, periode_col, _tbl.pop("label_raw"))
             def _sd(val):
                 try:
@@ -1227,68 +1267,70 @@ with tab_kpi:
                 except: return ""
             st.dataframe(
                 _tbl.style
-                    .applymap(_sd, subset=["Disponibilité (%)"])
-                    .format({"Disponibilité (%)":"{:.2f}%",
+                    .applymap(_sd, subset=["Availability (%)"])
+                    .format({"Availability (%)":"{:.2f}%",
                              "MTTR (h)":"{:.4f}","MTBF (h)":"{:.3f}"}),
                 use_container_width=True, hide_index=True,
                 height=min(420, len(_tbl) * 36 + 42))
 
         # ── Sélecteur de graphique ─────────────────────────────────────────────
         _chart_choice = st.radio(
-            "🔍 Choisir le graphique à visualiser :",
-            options=["Disponibilité (%)", "MTTR (h)", "MTBF (h)"],
+            "🔍 Select chart to display:",
+            options=["Availability (%)", "MTTR (h)", "MTBF (h)"],
             index=0, horizontal=True, key="te_chart_pick")
 
         # ── Rendu du graphique sélectionné (pleine largeur) ───────────────────
-        def _te_render_charts(df_v, suffix, is_mtbf):
-            """Affiche 1 graphique sélectionné pleine largeur + tableau récap."""
+        def _te_render_charts(df_v, suffix, is_mtbf, chart_key="Availability (%)"):
+            """Display selected chart full-width + summary table."""
             x = df_v["label"].tolist()
 
             _specs = {
-                "Disponibilité (%)": (
+                "Availability (%)": (
                     df_v["dispo"].tolist(),
-                    "Disponibilité (%)", "Dispo (%)", TE_GREEN, 95, ".1f"),
+                    "Availability (%)", "Avail. (%)", TE_GREEN, 95, ".1f"),
                 "MTBF (h)": (
                     df_v["mtbf_h"].tolist() if is_mtbf else [0]*len(df_v),
-                    "MTBF (h) — Fiabilité", "MTBF (h)", TE_NAVY, None, None),
+                    "MTBF (h) — Reliability", "MTBF (h)", TE_NAVY, None, None),
                 "MTTR (h)": (
                     df_v["mttr_h"].tolist(),
-                    "MTTR (h) — Réparabilité", "MTTR (h)", TE_ORANGE, None, None),
+                    "MTTR (h) — Repairability", "MTTR (h)", TE_ORANGE, None, None),
             }
-            _y, _ttl, _yt, _clr, _tgt, _fmt = _specs[_chart_choice]
+            # Fallback if key not found (e.g. stale session state)
+            _sel = chart_key if chart_key in _specs else "Availability (%)"
+            _y, _ttl, _yt, _clr, _tgt, _fmt = _specs[_sel]
 
             st.markdown('<div class="chart-card">', unsafe_allow_html=True)
             st.plotly_chart(
                 _te_line(x, _y, _ttl, _yt, _clr,
                          target=_tgt, y_fmt=_fmt, height=460),
                 use_container_width=True, config=PCONF)
-            if _chart_choice == "MTBF (h)" and not is_mtbf:
-                st.caption("⚠ Colonne MTBF absente du fichier Hydra.")
+            if _sel == "MTBF (h)" and not is_mtbf:
+                st.caption("⚠ MTBF column absent from Hydra file.")
             st.markdown("</div>", unsafe_allow_html=True)
 
         # ── Sub-tabs ──────────────────────────────────────────────────────────
-        _stab_w, _stab_m = st.tabs(["📆  Vue Hebdomadaire", "📅  Vue Mensuelle"])
+        _stab_w, _stab_m = st.tabs(["📆  Weekly View", "📅  Monthly View"])
 
         # ─── VUE HEBDOMADAIRE ─────────────────────────────────────────────────
         with _stab_w:
             if len(_df_week) < 2:
-                st.info("Pas assez de données hebdomadaires (minimum 2 semaines requises).")
+                st.info("Not enough weekly data (minimum 2 weeks required).")
             else:
-                _te_render_charts(_df_week, "w", has_mtbf)
-                _te_mini_label("Récapitulatif hebdomadaire")
-                _te_recap_table(_df_week, "Semaine")
+                _te_render_charts(_df_week, "w", has_mtbf, _chart_choice)
+                _te_mini_label("Weekly Summary")
+                _te_recap_table(_df_week, "Week")
 
         # ─── VUE MENSUELLE ────────────────────────────────────────────────────
         with _stab_m:
             if len(_df_month) < 2:
-                st.info("Pas assez de données mensuelles (minimum 2 mois requis).")
+                st.info("Not enough monthly data (minimum 2 months required).")
             else:
-                _te_render_charts(_df_month, "m", has_mtbf)
-                _te_mini_label("Récapitulatif mensuel")
-                _te_recap_table(_df_month, "Mois")
+                _te_render_charts(_df_month, "m", has_mtbf, _chart_choice)
+                _te_mini_label("Monthly Summary")
+                _te_recap_table(_df_month, "Month")
 
     else:
-        st.info("⚠ Colonne `plant_shift_date` absente — évolution temporelle indisponible.")
+        st.info("⚠ Column `plant_shift_date` absent — time trend unavailable.")
 
     # ── Pareto + Pie ───────────────────────────────────────────────────────────
     st.markdown('<div class="te-section">Pareto & Cause Analysis</div>', unsafe_allow_html=True)
@@ -1704,7 +1746,7 @@ with tab_kpi:
                     story.append(Paragraph(caption, S_CAP))
             else:
                 story.append(Paragraph(
-                    f"⚠ Graphique indisponible ({caption}) — "
+                    f"⚠ Chart unavailable ({caption}) — "
                     "pip install kaleido", S_CAP))
             story.append(Spacer(1, 0.2*cm))
 
@@ -1766,7 +1808,7 @@ with tab_kpi:
 
         def _make_trend_fig(df_v, col, title, color_hex,
                              target=None, h_px=280):
-            """Crée une figure Plotly d'évolution pour le PDF."""
+            """Create a Plotly trend figure for the PDF."""
             x  = df_v["label"].tolist()
             y  = df_v[col].tolist()
             fig = go.Figure()
@@ -1805,9 +1847,9 @@ with tab_kpi:
             return fig
 
         def _recap_pdf_table(df_v, periode_lbl):
-            """Tableau récap hebdo/mensuel pour le PDF."""
+            """Weekly/monthly summary table for the PDF."""
             hdr = [[periode_lbl, "MTTR (h)", "MTBF (h)",
-                    "Disponibilité (%)", "Arrêts", "Events"]]
+                    "Availability (%)", "Stops", "Events"]]
             rows = []
             extras = []
             for ri, row in df_v.iterrows():
@@ -1879,7 +1921,7 @@ with tab_kpi:
 
         story.append(_cover_row(
             Paragraph(
-                f"RAPPORT GÉNÉRÉ LE &nbsp;"
+                f"REPORT GENERATED: &nbsp;"
                 f"{datetime.now().strftime('%d/%m/%Y  à  %H:%M')}",
                 S_DATE),
             C_NAVY, pad_top=2, pad_bot=18))
@@ -1889,20 +1931,20 @@ with tab_kpi:
         # Tableau KPI récap — alternance orange/crème sur colonne label
         _kpi_data = [
             ["INDICATEUR", "VALEUR"],
-            ["Disponibilité Globale",
+            ["Global Availability",
              f"{kpi_d['dispo']:.2f} %"],
-            ["MTTR Moyen / Arrêt",
+            ["Avg MTTR / Stop",
              f"{kpi_d['mttr_mean_h']:.4f} h  "
              f"({round(kpi_d['mttr_mean_h']*60,1)} min)"],
-            ["MTBF Moyen",
+            ["Avg MTBF",
              f"{kpi_d['mtbf_mean_h']:.2f} h"],
-            ["Nombre Total d'Arrêts",
+            ["Total Stops",
              str(kpi_d['nb_arrets'])],
-            ["MTTR Cumulatif",
+            ["Cumulative MTTR",
              f"{kpi_d['mttr_total_h']:.2f} h"],
-            ["MTBF Cumulatif",
+            ["Cumulative MTBF",
              f"{kpi_d['mtbf_total_h']:.2f} h"],
-            ["Total Événements Analysés",
+            ["Total Events Analyzed",
              f"{kpi_d['nb_rows']:,}"],
         ]
         _cover_extras = []
@@ -1920,7 +1962,7 @@ with tab_kpi:
         section("── KPIs PRINCIPAUX")
         _kw = IW / 4
         _kpi_card = Table([
-            ["Disponibilité",        "Arrêts",
+            ["Availability",        "Stops",
              "MTTR Moy.",            "MTBF Moy."],
             [f"{kpi_d['dispo']:.2f} %",
              str(kpi_d['nb_arrets']),
@@ -1980,7 +2022,7 @@ with tab_kpi:
                 yaxis2=dict(title="Cumul (%)", range=[0,115],
                              ticksuffix="%", tickfont=dict(size=9)))
             insert_fig(_fp,
-                "Pareto Downtime — barres = MTTR cumulé · courbe rouge = % cumulé",
+                "Downtime Pareto — bars = cumulative MTTR · red curve = cumulative %",
                 w_px=720, h_px=290)
 
         # Pie
@@ -2003,7 +2045,7 @@ with tab_kpi:
             annotations=[dict(text=f"<b>{len(df_in):,}</b><br>events",
                                x=0.5, y=0.5, showarrow=False,
                                font=dict(size=13, color="#1B2A4A"))])
-        insert_fig(_fpi, "Répartition des statuts machine",
+        insert_fig(_fpi, "Machine status breakdown",
                     w_px=720, h_px=300)
         story.append(PageBreak())
 
@@ -2063,7 +2105,7 @@ with tab_kpi:
             "Matrice de Criticité — Bas-droite = priorité TPM absolue",
             w_px=720,h_px=340)
 
-        section("── ÉVOLUTION DE LA DISPONIBILITÉ QUOTIDIENNE")
+        section("── DAILY AVAILABILITY TREND")
         if "date_only" in df_in.columns:
             _da = df_in.groupby("date_only").agg(
                 mt=("mttr_h","sum"),mb=("mtbf_h","sum")).reset_index()
@@ -2105,7 +2147,7 @@ with tab_kpi:
                            tickfont=dict(size=9),zeroline=False,tickangle=-35),
                 legend=dict(orientation="h",x=0,y=-0.25,font=dict(size=8)))
             insert_fig(_fevo,
-                "Disponibilité quotidienne · pointillé navy = global · rouge = cible 95%",
+                "Daily availability per machine · navy dotted = global · red = 95% target",
                 w_px=720,h_px=290)
         story.append(PageBreak())
 
@@ -2120,30 +2162,30 @@ with tab_kpi:
 
         _df_w, _df_m = _pdf_te_agg(df_in)
 
-        # ─ Choisir la vue la plus riche (hebdo si ≥2 semaines, sinon mensuel) ─
+        # ─ Use richest view (weekly if ≥2 weeks, else monthly) ─
         _has_week  = not _df_w.empty and len(_df_w) >= 2
         _has_month = not _df_m.empty and len(_df_m) >= 2
 
         for _view_lbl, _df_v, _has_v, _periode_col in [
-            ("Vue Hebdomadaire", _df_w, _has_week,  "Semaine"),
-            ("Vue Mensuelle",    _df_m, _has_month, "Mois"),
+            ("Weekly View", _df_w, _has_week,  "Week"),
+            ("Monthly View",    _df_m, _has_month, "Month"),
         ]:
             if not _has_v:
                 story.append(Paragraph(
-                    f"⚠ {_view_lbl} — données insuffisantes "
-                    f"(minimum 2 périodes requises).", S_CAP))
+                    f"⚠ {_view_lbl} — insufficient data "
+                    f"(minimum 2 periods required).", S_CAP))
                 continue
 
             story.append(Paragraph(_view_lbl, S_SSEC))
             story.append(hr(color=C_NAVY, thick=0.8))
 
-            # ── Graphique 1 : Disponibilité ────────────────────────────────
+            # ── Chart 1: Availability ───────────────────────────────────────
             insert_fig(
                 _make_trend_fig(_df_v, "dispo",
-                                f"Disponibilité (%) — {_view_lbl}",
+                                f"Availability (%) — {_view_lbl}",
                                 "#27AE60", target=95, h_px=250),
-                f"Disponibilité {_view_lbl.lower()} · "
-                "Ligne rouge pointillée = cible 95%",
+                f"Availability {_view_lbl.lower()} · "
+                "Red dotted line = 95% target",
                 w_px=720, h_px=250)
 
             # ── Graphique 2 : MTTR ─────────────────────────────────────────
@@ -2151,8 +2193,8 @@ with tab_kpi:
                 _make_trend_fig(_df_v, "mttr_h",
                                 f"MTTR total (h) — {_view_lbl}",
                                 "#E8650A", h_px=230),
-                f"MTTR cumulé {_view_lbl.lower()} · "
-                "Plus bas = meilleures réparations",
+                f"Cumulative MTTR {_view_lbl.lower()} · "
+                "Lower = better repairs",
                 w_px=720, h_px=230)
 
             # ── Graphique 3 : MTBF ─────────────────────────────────────────
@@ -2161,14 +2203,14 @@ with tab_kpi:
                     _make_trend_fig(_df_v, "mtbf_h",
                                     f"MTBF total (h) — {_view_lbl}",
                                     "#1B2A4A", h_px=230),
-                    f"MTBF cumulé {_view_lbl.lower()} · "
-                    "Plus haut = meilleure fiabilité",
+                    f"Cumulative MTBF {_view_lbl.lower()} · "
+                    "Higher = better reliability",
                     w_px=720, h_px=230)
 
-            # ── Tableau récap ──────────────────────────────────────────────
+            # ── Summary table ───────────────────────────────────────────────
             story.append(Spacer(1, 0.2*cm))
             story.append(Paragraph(
-                f"Tableau récapitulatif — {_view_lbl}", S_SSEC))
+                f"Summary Table — {_view_lbl}", S_SSEC))
             story.append(_recap_pdf_table(_df_v, _periode_col))
             story.append(Spacer(1, 0.4*cm))
 
@@ -2180,7 +2222,7 @@ with tab_kpi:
 
         section("── SUMMARY TABLE BY MACHINE")
         _hd_ma = [["Machine","MTTR Total (h)","MTBF Total (h)",
-                   "Événements","Disponibilité (%)"]]
+                   "Events","Availability (%)"]]
         _rows_ma = []
         _ext_ma  = []
         for _ri, _row in ma_table.iterrows():
@@ -2225,7 +2267,7 @@ with tab_kpi:
         #  PAGE 6 — DONNÉES QUALIFIÉES
         # ══════════════════════════════════════════════════════════════════════
 
-        section("── DONNÉES QUALIFIÉES — SAISIE TECHNICIEN")
+        section("── QUALIFIED STOPS — TECHNICIAN INPUT")
 
         if all(c in df_in.columns for c in ["Shift","Key Failure"]):
             def _nb(v): return str(v).strip() not in ("","None","nan")
@@ -2258,7 +2300,7 @@ with tab_kpi:
                             _rv.append(_s[:34]+"…" if len(_s)>35 else _s)
                     _rows_q.append(_rv)
                 story.append(Paragraph(
-                    f"{len(_rows_q)} arrêt(s) qualifié(s) sur la période.",
+                    f"{len(_rows_q)} qualified stop(s) in selected period.",
                     S_BODY))
                 story.append(Spacer(1,0.15*cm))
                 story.append(_tbl(_hd_q+_rows_q,
@@ -2266,11 +2308,184 @@ with tab_kpi:
                                    fs=7))
             else:
                 story.append(Paragraph(
-                    "Aucun arrêt qualifié pour la période sélectionnée.",
+                    "No qualified stops for the selected period.",
                     S_BODY))
         else:
             story.append(Paragraph(
-                "Colonnes Shift / Key Failure non disponibles.", S_BODY))
+                "Shift / Key Failure columns not available.", S_BODY))
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  PAGE 7 — SPARE PARTS & MAINTENANCE COSTS
+        # ══════════════════════════════════════════════════════════════════════
+
+        story.append(PageBreak())
+
+        # ── Header block ──────────────────────────────────────────────────────
+        _hdr_cost = Table([[
+            Paragraph("💰  SPARE PARTS &amp; MAINTENANCE COSTS",
+                      ps("sph", fontSize=16, fontName="Helvetica-Bold",
+                         textColor=C_WH, leading=20)),
+            Paragraph("Financial breakdown by event",
+                      ps("sps", fontSize=9, textColor=HexColor("#FAD0A8"),
+                         fontName="Helvetica", leading=13, alignment=2)),
+        ]], colWidths=[IW * 0.65, IW * 0.35])
+        _hdr_cost.setStyle(TableStyle([
+            ("BACKGROUND",    (0,0),(-1,-1), C_NAVY),
+            ("TOPPADDING",    (0,0),(-1,-1), 14),
+            ("BOTTOMPADDING", (0,0),(-1,-1), 14),
+            ("LEFTPADDING",   (0,0),(-1,-1), 14),
+            ("RIGHTPADDING",  (0,0),(-1,-1), 14),
+            ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ]))
+        story.append(_hdr_cost)
+        story.append(hr(color=C_OR, thick=3))
+        story.append(Spacer(1, 0.2*cm))
+
+        # ── Compute cost data ─────────────────────────────────────────────────
+        if "Total Part Cost" in df_in.columns:
+            _cd = df_in[
+                pd.to_numeric(df_in["Total Part Cost"], errors="coerce")
+                .fillna(0) > 0
+            ].copy()
+        else:
+            _cd = pd.DataFrame()
+
+        _total_spend = float(
+            pd.to_numeric(df_in.get("Total Part Cost", pd.Series([0.0])),
+                          errors="coerce").fillna(0).sum()
+        ) if "Total Part Cost" in df_in.columns else 0.0
+
+        _n_cost_events = len(_cd)
+        _n_parts_filled = int(
+            _cd["Spare Part Ref"].astype(str).str.strip()
+            .replace({"":"", "nan":"", "None":""})
+            .ne("").sum()
+        ) if "Spare Part Ref" in _cd.columns else 0
+
+        # ── KPI summary strip ─────────────────────────────────────────────────
+        _kpi_cost_data = [
+            ["TOTAL SPEND", "EVENTS WITH COST", "PARTS REFERENCED"],
+            [f"€ {_total_spend:,.2f}",
+             str(_n_cost_events),
+             str(_n_parts_filled)],
+        ]
+        _kc = Table(_kpi_cost_data, colWidths=[IW/3]*3)
+        _kc.setStyle(TableStyle([
+            ("FONTNAME",      (0,0),(-1,0),  "Helvetica-Bold"),
+            ("FONTSIZE",      (0,0),(-1,0),  8),
+            ("FONTNAME",      (0,1),(-1,1),  "Helvetica-Bold"),
+            ("FONTSIZE",      (0,1),(-1,1),  16),
+            ("TEXTCOLOR",     (0,0),(-1,-1), C_WH),
+            ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+            ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+            ("TOPPADDING",    (0,0),(-1,0),  8),
+            ("BOTTOMPADDING", (0,0),(-1,0),  4),
+            ("TOPPADDING",    (0,1),(-1,1),  8),
+            ("BOTTOMPADDING", (0,1),(-1,1),  12),
+            ("BACKGROUND",    (0,0),(0,-1),  C_OR),
+            ("BACKGROUND",    (1,0),(1,-1),  C_NAVY),
+            ("BACKGROUND",    (2,0),(2,-1),  HexColor("#2A4A6A")),
+            ("INNERGRID",     (0,0),(-1,-1), 2.0, C_WH),
+        ]))
+        story.append(_kc)
+        story.append(Spacer(1, 0.35*cm))
+
+        if not _cd.empty:
+            # ── Detail table ──────────────────────────────────────────────────
+            story.append(Paragraph("── Event Detail", S_SSEC))
+            story.append(hr(color=C_NAVY, thick=0.8))
+
+            _cost_hdr = [[
+                "Machine", "Date", "Shift", "Key Failure",
+                "Spare Part / Ref", "Qty",
+                "Unit Price (€)", "Total Cost (€)",
+            ]]
+            _cost_rows_pdf = []
+            _cost_extras   = []
+            for _ri, (_idx, _row) in enumerate(_cd.iterrows()):
+                _tc = float(pd.to_numeric(
+                    _row.get("Total Part Cost", 0), errors="coerce") or 0)
+                _cost_rows_pdf.append([
+                    str(_row.get(COL_MACHINE,  "—"))[:12],
+                    str(_row.get(COL_DATE,     "—"))[:10],
+                    str(_row.get("Shift",      "—"))[:4],
+                    str(_row.get("Key Failure","—"))[:28],
+                    str(_row.get("Spare Part Ref","—"))[:22],
+                    str(int(pd.to_numeric(
+                        _row.get("Qty",0), errors="coerce") or 0)),
+                    f"€ {float(pd.to_numeric(_row.get('Unit Price (€)',0),errors='coerce') or 0):.2f}",
+                    f"€ {_tc:.2f}",
+                ])
+                _ri_t = len(_cost_rows_pdf)
+                if _tc > 0:
+                    _cost_extras += [
+                        ("TEXTCOLOR",  (7, _ri_t),(7, _ri_t), C_OR),
+                        ("FONTNAME",   (7, _ri_t),(7, _ri_t), "Helvetica-Bold"),
+                    ]
+
+            _cws_cost = [IW*x for x in [0.10,0.10,0.06,0.24,0.20,0.06,0.12,0.12]]
+            story.append(_tbl(_cost_hdr + _cost_rows_pdf,
+                               _cws_cost, fs=7, extras=_cost_extras))
+            story.append(Spacer(1, 0.3*cm))
+
+            # ── Cost by machine bar chart ──────────────────────────────────────
+            _by_mac = (
+                _cd.groupby(COL_MACHINE)["Total Part Cost"]
+                .sum().reset_index()
+                .sort_values("Total Part Cost", ascending=False)
+            )
+            if len(_by_mac) >= 1:
+                story.append(Paragraph("── Cost by Machine", S_SSEC))
+                story.append(hr(color=C_NAVY, thick=0.8))
+                _fbar = go.Figure(go.Bar(
+                    x=_by_mac[COL_MACHINE],
+                    y=_by_mac["Total Part Cost"],
+                    marker=dict(
+                        color=["#E8650A" if i==0 else "#1B2A4A"
+                               for i in range(len(_by_mac))],
+                        line=dict(width=0)),
+                    text=[f"€{v:,.2f}" for v in _by_mac["Total Part Cost"]],
+                    textposition="outside",
+                    hoverinfo="skip",
+                ))
+                _fbar.update_layout(
+                    height=260, width=720, showlegend=False,
+                    paper_bgcolor="white", plot_bgcolor="#FAFAFA",
+                    margin=dict(l=44, r=16, t=16, b=44),
+                    xaxis=dict(tickfont=dict(size=10), gridcolor="#F0E8E0"),
+                    yaxis=dict(title="Cost (€)", gridcolor="#F0E8E0",
+                               tickprefix="€", tickfont=dict(size=9)),
+                )
+                insert_fig(_fbar,
+                    "Spare parts expenditure by machine",
+                    w_px=720, h_px=260)
+
+            # ── Grand total row ───────────────────────────────────────────────
+            story.append(Spacer(1, 0.2*cm))
+            _tot_t = Table([[
+                Paragraph("TOTAL SPARE PARTS EXPENDITURE",
+                          ps("totp", fontSize=11, fontName="Helvetica-Bold",
+                             textColor=C_WH)),
+                Paragraph(f"€ {_total_spend:,.2f}",
+                          ps("totv", fontSize=14, fontName="Helvetica-Bold",
+                             textColor=C_WH, alignment=2)),
+            ]], colWidths=[IW * 0.65, IW * 0.35])
+            _tot_t.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0),(-1,-1), C_OR),
+                ("TOPPADDING",    (0,0),(-1,-1), 12),
+                ("BOTTOMPADDING", (0,0),(-1,-1), 12),
+                ("LEFTPADDING",   (0,0),(-1,-1), 16),
+                ("RIGHTPADDING",  (0,0),(-1,-1), 16),
+                ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+            ]))
+            story.append(_tot_t)
+
+        else:
+            story.append(Paragraph(
+                "No spare parts costs recorded for this period. "
+                "Fill in Qty and Unit Price in the Stops Qualification tab "
+                "and click Save Changes to record costs.",
+                S_BODY))
 
         # ══════════════════════════════════════════════════════════════════════
         #  FOOTER + BUILD
@@ -2327,7 +2542,7 @@ with tab_kpi:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 2 — QUALIFICATION DES ARRÊTS  (filtres + User ID + persistance robuste)
+#  TAB 2 — STOPS QUALIFICATION  (filters + User ID + robust persistence)
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 2 — QUALIFICATION DES ARRÊTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2338,11 +2553,13 @@ with tab_qual:
     # ─────────────────────────────────────────────────────────────────────────
     def _is_qualified(r):
         return any(str(r.get(c, "")).strip() not in ("", "None", "nan")
-                   for c in ["Shift", "Key Failure"])
+                   for c in ["Shift", "Key Failure",
+                              "Issue Description", "Action Taken", "Spare Part Ref"])
 
     # Compteurs globaux (calculés sur df filtré sidebar)
-    _qual_n = int(df[["Shift","Key Failure"]].apply(_is_qualified, axis=1).sum()) \
-        if all(c in df.columns for c in ["Shift","Key Failure"]) else 0
+    _check_cols = [c for c in ["Shift","Key Failure"] if c in df.columns]
+    _qual_n = int(df[_check_cols].apply(_is_qualified, axis=1).sum()) \
+        if _check_cols else 0
     _stop_n = int((df["mttr_h"] > 0).sum())
     _pct_q  = (_qual_n / _stop_n * 100) if _stop_n > 0 else 0
 
@@ -2356,14 +2573,14 @@ with tab_qual:
         <div>
           <div style="font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:800;
                       color:{TE_ORANGE};letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">
-            ✏️ Qualification des Arrêts
+            ✏️ Stops Qualification
           </div>
           <div style="font-family:'JetBrains Mono',monospace;font-size:10px;
                       color:rgba(255,255,255,0.6);line-height:1.9">
-            Renseignez votre <strong style="color:{TE_ORANGE2}">User ID</strong>,
-            le <strong style="color:{TE_ORANGE2}">Shift</strong>
-            et la <strong style="color:{TE_ORANGE2}">Key Failure</strong>
-            · Cliquez sur <strong style="color:{TE_ORANGE2}">💾 Enregistrer</strong> pour valider
+            Fill in your <strong style="color:{TE_ORANGE2}">User ID</strong>,
+            the <strong style="color:{TE_ORANGE2}">Shift</strong>
+            and the <strong style="color:{TE_ORANGE2}">Key Failure</strong>
+            · Click <strong style="color:{TE_ORANGE2}">💾 Save Changes</strong> to confirm
           </div>
         </div>
         <div style="text-align:right">
@@ -2381,7 +2598,7 @@ with tab_qual:
         <div style="display:flex;justify-content:space-between;font-size:9px;
                     color:rgba(255,255,255,0.4);font-family:'JetBrains Mono',monospace;
                     margin-bottom:5px">
-          <span>Progression de la qualification</span>
+          <span>Qualification progress</span>
           <span style="color:{TE_ORANGE}">{_qual_n} / {_stop_n} ({_pct_q:.0f}%)</span>
         </div>
         <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:7px;overflow:hidden">
@@ -2401,7 +2618,7 @@ with tab_qual:
       <div style="font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;
                   letter-spacing:2.5px;text-transform:uppercase;
                   color:{TE_ORANGE};margin-bottom:10px">
-        🔍 Recherche Rapide
+        🔍 Quick Search
       </div>
     """, unsafe_allow_html=True)
 
@@ -2409,39 +2626,42 @@ with tab_qual:
     _fcol1, _fcol2 = st.columns(2)
 
     with _fcol1:
-        _machines_avail = ["Toutes"] + sorted(
+        _machines_avail = ["All"] + sorted(
             _df_stops[COL_MACHINE].dropna().unique().tolist())
         _filter_machine = st.selectbox(
             "🏭 Machine ID",
             options=_machines_avail, index=0,
             key="q_filter_machine",
-            help="Filtrer par machine spécifique")
+            help="Filter by specific machine")
 
     with _fcol2:
         _dates_raw    = pd.to_datetime(_df_stops[COL_DATE], errors="coerce").dropna()
         _dates_avail  = sorted(_dates_raw.dt.date.unique())
-        _date_options = ["Toutes"] + [d.strftime("%m/%d/%Y") for d in _dates_avail]
+        _date_options = ["All"] + [d.strftime("%m/%d/%Y") for d in _dates_avail]
         _filter_date_str = st.selectbox(
-            "📅 Date précise",
+            "📅 Exact Date",
             options=_date_options, index=0,
             key="q_filter_date",
-            help="Filtrer par date de shift exacte")
+            help="Filter by exact shift date")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Construction du df filtré ─────────────────────────────────────────────
-    # Ordre colonnes : Hydra read-only | User ID | Shift | Key Failure
+    # Ordre colonnes : Hydra read-only | qualification | cost fields
     _display_cols = [c for c in [
-        COL_MACHINE, COL_DATE, COL_STATUS, "mttr_h",  # ← lecture seule
-        "User ID", "Shift", "Key Failure"             # ← éditables dans cet ordre
+        COL_MACHINE, COL_DATE, COL_STATUS, "mttr_h",   # read-only Hydra
+        "User ID", "Shift", "Key Failure",              # identity + root cause
+        "Issue Description", "Action Taken",            # free text
+        "Spare Part Ref", "Qty", "Unit Price (€)",      # cost inputs
+        "Total Part Cost",                              # calculated (read-only)
     ] if c in df.columns]
 
     _df_base = _df_stops.copy()   # index = index original de df / session_state
 
-    if _filter_machine != "Toutes":
+    if _filter_machine != "All":
         _df_base = _df_base[_df_base[COL_MACHINE] == _filter_machine]
 
-    if _filter_date_str != "Toutes":
+    if _filter_date_str != "All":
         _target_date = pd.to_datetime(_filter_date_str, format="%m/%d/%Y", errors="coerce")
         if pd.notna(_target_date):
             _df_base = _df_base[
@@ -2461,28 +2681,35 @@ with tab_qual:
 
     # Compteur de lignes
     _n_shown    = len(_df_show)
-    _is_filtered = _filter_machine != "Toutes" or _filter_date_str != "Toutes"
+    _is_filtered = _filter_machine != "All" or _filter_date_str != "All"
     st.markdown(
         f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:9px;'
         f'color:#9A7A60;margin-bottom:8px;letter-spacing:1px">'
-        f'Affichage : <strong style="color:{TE_ORANGE}">{_n_shown}</strong>'
-        f' arrêt{"s" if _n_shown != 1 else ""}'
-        f'{"  ·  filtre actif / " + str(_stop_n) + " stops totaux" if _is_filtered else "  ·  " + str(_stop_n) + " stops totaux"}'
+        f'Showing: <strong style="color:{TE_ORANGE}">{_n_shown}</strong>'
+        f' stop{"s" if _n_shown != 1 else ""}'
+        f'{"  ·  active filter / " + str(_stop_n) + " total stops" if _is_filtered else "  ·  " + str(_stop_n) + " total stops"}'
         f'</div>',
         unsafe_allow_html=True)
 
     if _df_show.empty:
-        st.info("Aucun arrêt ne correspond aux filtres sélectionnés.")
+        st.info("No stops match the selected filters.")
     else:
+        # ── Live recalc Total Part Cost before display ────────────────────────
+        if "Qty" in _df_show.columns and "Unit Price (€)" in _df_show.columns:
+            _df_show["Total Part Cost"] = (
+                pd.to_numeric(_df_show["Qty"], errors="coerce").fillna(0) *
+                pd.to_numeric(_df_show["Unit Price (€)"], errors="coerce").fillna(0.0)
+            ).round(2)
+
         # ── Tableau éditable ──────────────────────────────────────────────────
         _edited = st.data_editor(
             _df_show,
             use_container_width=True,
-            height=min(600, max(200, _n_shown * 38 + 62)),
+            height=min(700, max(250, _n_shown * 42 + 62)),
             num_rows="fixed",
-            column_order=_display_cols,    # ordre explicite forcé
+            column_order=_display_cols,
             column_config={
-                # ── Lecture seule — données Hydra ──────────────────────────
+                # ── Read-only — Hydra data ──────────────────────────────────
                 COL_MACHINE: st.column_config.TextColumn(
                     "🏭 Machine", disabled=True, width="small"),
                 COL_DATE: st.column_config.TextColumn(
@@ -2492,33 +2719,89 @@ with tab_qual:
                 "mttr_h": st.column_config.NumberColumn(
                     "⏱ MTTR (h)", format="%.4f",
                     disabled=True, width="small"),
-                # ── Éditables : ordre 1→2→3 ────────────────────────────────
+                # ── Editable — Identity ─────────────────────────────────────
                 "User ID": st.column_config.TextColumn(
-                    "👤 User ID",
-                    disabled=False, width="small", max_chars=20,
-                    help="Votre matricule / identifiant technicien"),
+                    "👤 User ID", disabled=False, width="small",
+                    max_chars=20,
+                    help="Your technician badge / employee ID"),
                 "Shift": st.column_config.SelectboxColumn(
-                    "🔄 Shift",
-                    options=SHIFTS, required=False, width="small",
+                    "🔄 Shift", options=SHIFTS,
+                    required=False, width="small",
                     help="A (6-14h) · B (14-22h) · C (22-6h)"),
                 "Key Failure": st.column_config.SelectboxColumn(
-                    "🔧 Key Failure",
-                    options=KEY_FAILURES, required=False, width="large",
-                    help="Cause racine de l'arrêt"),
+                    "🔧 Key Failure", options=KEY_FAILURES,
+                    required=False, width="large",
+                    help="Root cause of the stop"),
+                # ── Editable — Free text ────────────────────────────────────
+                "Issue Description": st.column_config.TextColumn(
+                    "📝 Issue Description", disabled=False, width="large",
+                    max_chars=300,
+                    help="Describe the problem observed"),
+                "Action Taken": st.column_config.TextColumn(
+                    "🔨 Action Taken", disabled=False, width="large",
+                    max_chars=300,
+                    help="What was done to repair the machine"),
+                # ── Editable — Cost inputs ──────────────────────────────────
+                "Spare Part Ref": st.column_config.TextColumn(
+                    "🔩 Spare Part / Ref", disabled=False, width="medium",
+                    max_chars=100,
+                    help="Part name or reference number used"),
+                "Qty": st.column_config.NumberColumn(
+                    "🔢 Qty", disabled=False, width="small",
+                    min_value=0, step=1, default=0,
+                    help="Quantity of spare parts used"),
+                "Unit Price (€)": st.column_config.NumberColumn(
+                    "💶 Unit Price (€)", disabled=False, width="small",
+                    min_value=0.0, step=0.01, format="%.2f", default=0.0,
+                    help="Unit price of the spare part in €"),
+                # ── Read-only — Calculated ──────────────────────────────────
+                "Total Part Cost": st.column_config.NumberColumn(
+                    "💰 Total Cost (€)", disabled=True, width="small",
+                    format="%.2f",
+                    help="Qty × Unit Price (auto-calculated on Save)"),
             },
-            key="qual_editor_v5"
+            key="qual_editor_v6"
         )
 
-        # ── Bouton 💾 Enregistrer (centré, pleine largeur centrale) ──────────
+        # ── Live cost preview below table ─────────────────────────────────────
+        if _edited is not None and "Qty" in _edited.columns and "Unit Price (€)" in _edited.columns:
+            _live_cost = float(
+                (pd.to_numeric(_edited["Qty"], errors="coerce").fillna(0) *
+                 pd.to_numeric(_edited["Unit Price (€)"], errors="coerce").fillna(0.0)
+                ).sum())
+            if _live_cost > 0:
+                st.markdown(f"""
+                <div style="background:linear-gradient(90deg,#0d1f0d,#1a3a1a);
+                            border:1.5px solid #27AE60;border-radius:8px;
+                            padding:10px 18px;margin:6px 0;
+                            display:flex;align-items:center;gap:12px">
+                  <span style="font-size:20px">💰</span>
+                  <div>
+                    <span style="font-family:'Barlow Condensed',sans-serif;
+                                 font-size:10px;color:rgba(255,255,255,0.5);
+                                 letter-spacing:2px;text-transform:uppercase">
+                      Current view · Spare Parts Cost
+                    </span><br>
+                    <span style="font-family:'Barlow Condensed',sans-serif;
+                                 font-size:22px;font-weight:800;color:#27AE60">
+                      € {_live_cost:,.2f}
+                    </span>
+                    <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-left:8px">
+                      (click 💾 Save to update global KPI)
+                    </span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+        # ── Bouton 💾 Save Changes ────────────────────────────────────────────
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         _sb_left, _sb_mid, _sb_right = st.columns([1.5, 2, 1.5])
         with _sb_mid:
             _save_clicked = st.button(
-                "💾  ENREGISTRER LES MODIFICATIONS",
+                "💾  SAVE CHANGES",
                 type="primary",
                 use_container_width=True,
                 key="btn_save_qual",
-                help="Valider et sauvegarder les saisies du tableau ci-dessus")
+                help="Validate and save entries from the table above")
 
         # ── Bouton Export Excel — données complètes session_state ────────────
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
@@ -2527,8 +2810,8 @@ with tab_qual:
         def _build_excel_export():
             """
             Génère un .xlsx complet depuis session_state.edited_df.
-            Feuille 1 : TOUTES les lignes, colonnes Hydra + User ID / Shift / Key Failure.
-            Feuille 2 : Uniquement les arrêts (mttr_h > 0), colonnes lisibles.
+            Sheet 1: ALL rows, Hydra columns + User ID / Shift / Key Failure.
+            Sheet 2: Stops only (mttr_h > 0), readable columns.
             """
             from openpyxl.styles import (Font, PatternFill, Alignment,
                                           Border, Side)
@@ -2542,12 +2825,22 @@ with tab_qual:
                          "_month_lbl", "_week_lbl", "_week_year"}
 
             # ── Nettoyage colonnes qualification ─────────────────────────────
-            for _c in ["User ID", "Shift", "Key Failure"]:
+            for _c in ["User ID", "Shift", "Key Failure",
+                       "Issue Description", "Action Taken", "Spare Part Ref"]:
                 if _c in _src.columns:
                     _src[_c] = (_src[_c].fillna("")
                                         .astype(str)
                                         .str.strip()
                                         .replace({"nan": "", "None": ""}))
+            for _c in ["Qty", "Unit Price (€)", "Total Part Cost"]:
+                if _c in _src.columns:
+                    _src[_c] = pd.to_numeric(_src[_c], errors="coerce").fillna(0)
+
+            # Recalculate Total Part Cost cleanly
+            if "Qty" in _src.columns and "Unit Price (€)" in _src.columns:
+                _src["Total Part Cost"] = (
+                    _src["Qty"] * _src["Unit Price (€)"]
+                ).round(2)
 
             # ── Colonne MTTR lisible (en heures, arrondie) ────────────────────
             if "mttr_h" in _src.columns:
@@ -2564,17 +2857,23 @@ with tab_qual:
             _hydra_base = [c for c in _src.columns
                            if c not in _INTERNAL
                            and c not in ["User ID", "Shift", "Key Failure",
+                                         "Issue Description", "Action Taken",
+                                         "Spare Part Ref", "Qty",
+                                         "Unit Price (€)", "Total Part Cost",
                                          "MTTR (h)", "MTBF (h)"]]
             _metric_cols = [c for c in ["MTTR (h)", "MTBF (h)"]
                             if c in _src.columns]
-            _qual_cols   = [c for c in ["User ID", "Shift", "Key Failure"]
-                            if c in _src.columns]
+            _qual_cols   = [c for c in [
+                "User ID", "Shift", "Key Failure",
+                "Issue Description", "Action Taken",
+                "Spare Part Ref", "Qty", "Unit Price (€)", "Total Part Cost",
+            ] if c in _src.columns]
             _all_cols    = _hydra_base + _metric_cols + _qual_cols
 
             # ── Helper style ──────────────────────────────────────────────────
             def _style_sheet(ws, df_data, header_color="1B2A4A",
                               zebra_color="F7F4F0"):
-                """Applique header foncé + alternance de lignes + bordures."""
+                """Apply dark header, row alternation and borders."""
                 _hdr_font    = Font(bold=True, color="FFFFFF",
                                     name="Calibri", size=10)
                 _hdr_fill    = PatternFill("solid",
@@ -2621,12 +2920,12 @@ with tab_qual:
                 # ── FEUILLE 1 : Données complètes ─────────────────────────────
                 _df_full = _src[_all_cols].copy()
                 _df_full.to_excel(_writer,
-                                   sheet_name="Données Complètes",
+                                   sheet_name="Full Dataset",
                                    index=False)
-                _style_sheet(_writer.sheets["Données Complètes"],
+                _style_sheet(_writer.sheets["Full Dataset"],
                               _df_full, header_color="1B2A4A")
 
-                # ── FEUILLE 2 : Arrêts qualifiés ──────────────────────────────
+                # ── SHEET 2: Qualified Stops ────────────────────────────────────
                 _mask_stops = (_src["mttr_h"] > 0
                                if "mttr_h" in _src.columns
                                else pd.Series(True, index=_src.index))
@@ -2634,25 +2933,60 @@ with tab_qual:
 
                 _stops_cols = [c for c in [
                     COL_MACHINE, COL_DATE, COL_STATUS,
-                    "MTTR (h)", "User ID", "Shift", "Key Failure"
+                    "MTTR (h)", "User ID", "Shift", "Key Failure",
+                    "Issue Description", "Action Taken",
+                    "Spare Part Ref", "Qty", "Unit Price (€)", "Total Part Cost",
                 ] if c in _stops.columns]
 
-                # Marquer les lignes non qualifiées
+                # Mark qualified rows
                 def _mark_qual(r):
                     return (str(r.get("Shift","")).strip() not in
                             ("","nan","None") or
                             str(r.get("Key Failure","")).strip() not in
                             ("","nan","None"))
 
-                _stops["Qualifié"] = _stops[_stops_cols].apply(
-                    _mark_qual, axis=1).map({True: "✅ Oui", False: "⬜ Non"})
-                _stops2_cols = _stops_cols + ["Qualifié"]
+                _stops["Qualified"] = _stops[_stops_cols].apply(
+                    _mark_qual, axis=1).map({True: "✅ Yes", False: "⬜ No"})
+                _stops2_cols = _stops_cols + ["Qualified"]
 
                 _stops[_stops2_cols].to_excel(
-                    _writer, sheet_name="Arrêts (stops)", index=False)
-                _style_sheet(_writer.sheets["Arrêts (stops)"],
+                    _writer, sheet_name="Stops", index=False)
+                _style_sheet(_writer.sheets["Stops"],
                               _stops[_stops2_cols],
                               header_color="E8650A")
+
+                # ── SHEET 3: Cost Summary ──────────────────────────────────
+                _cost_rows = _stops[
+                    pd.to_numeric(_stops.get("Total Part Cost", pd.Series([0])),
+                                  errors="coerce").fillna(0) > 0
+                ].copy() if "Total Part Cost" in _stops.columns else pd.DataFrame()
+
+                if not _cost_rows.empty:
+                    _cost_cols = [c for c in [
+                        COL_MACHINE, COL_DATE, "User ID", "Key Failure",
+                        "Spare Part Ref", "Qty", "Unit Price (€)", "Total Part Cost",
+                    ] if c in _cost_rows.columns]
+                    _cost_df = _cost_rows[_cost_cols].copy()
+
+                    # Add total row
+                    _total_row = {c: "" for c in _cost_cols}
+                    _total_row["Spare Part Ref"] = "TOTAL"
+                    _total_row["Total Part Cost"] = _cost_df["Total Part Cost"].sum().round(2)
+                    _cost_df = pd.concat(
+                        [_cost_df, pd.DataFrame([_total_row])],
+                        ignore_index=True)
+
+                    _cost_df.to_excel(_writer, sheet_name="Cost Summary", index=False)
+                    _ws_cost = _writer.sheets["Cost Summary"]
+                    _style_sheet(_ws_cost, _cost_df, header_color="1B2A4A")
+
+                    # Highlight Total row in orange
+                    from openpyxl.styles import Font, PatternFill
+                    _last = _ws_cost.max_row
+                    for _cell in _ws_cost[_last]:
+                        _cell.fill = PatternFill("solid", fgColor="E8650A")
+                        _cell.font = Font(bold=True, color="FFFFFF",
+                                          name="Calibri", size=10)
 
             _buf.seek(0)
             return _buf.read()
@@ -2663,22 +2997,27 @@ with tab_qual:
                 _excel_bytes = _build_excel_export()
                 _ts_xl = datetime.now().strftime("%Y%m%d_%H%M")
                 st.download_button(
-                    label="📥  EXPORTER LA DATA QUALIFIÉE (EXCEL)",
+                    label="📥  EXPORT QUALIFIED DATA (EXCEL)",
                     data=_excel_bytes,
                     file_name=f"TE_Qualification_{_ts_xl}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument"
                          ".spreadsheetml.sheet",
                     use_container_width=True,
                     key="btn_export_excel",
-                    help="Télécharge toutes les données + User ID / Shift / Key Failure"
+                    help="Downloads all data + User ID / Shift / Key Failure"
                 )
             except Exception as _ex_err:
-                st.warning(f"⚠ Export Excel indisponible : {_ex_err}")
+                st.warning(f"⚠ Excel export unavailable: {_ex_err}")
 
         # ── Persistance : uniquement au clic Enregistrer ─────────────────────
         if _save_clicked and _edited is not None:
             _n_saved = 0
-            for _col in ["User ID", "Shift", "Key Failure"]:
+            _ALL_SAVE_COLS = [
+                "User ID", "Shift", "Key Failure",
+                "Issue Description", "Action Taken", "Spare Part Ref",
+                "Qty", "Unit Price (€)",
+            ]
+            for _col in _ALL_SAVE_COLS:
                 if _col not in _edited.columns:
                     continue
                 _new_vals = _edited[_col].values
@@ -2694,9 +3033,17 @@ with tab_qual:
                             _n_saved += 1
                 except Exception:
                     st.session_state.edited_df.loc[_orig_idx, _col] = _new_vals
-                    _n_saved += int(_diff.sum()) if '_diff' in dir() else len(_orig_idx)
+                    _n_saved += len(_orig_idx)
 
-            # Stocker le résultat pour affichage après rerun
+            # Recalculate Total Part Cost globally after save
+            _edf2 = st.session_state.edited_df
+            _edf2["Total Part Cost"] = (
+                pd.to_numeric(_edf2["Qty"], errors="coerce").fillna(0) *
+                pd.to_numeric(_edf2["Unit Price (€)"], errors="coerce").fillna(0.0)
+            ).round(2)
+            st.session_state.edited_df = _edf2
+
+            # Store result for display after rerun
             st.session_state["_save_result"] = _n_saved
             st.rerun()
 
@@ -2716,13 +3063,12 @@ with tab_qual:
                     <div style="font-family:'Barlow Condensed',sans-serif;font-size:15px;
                                 font-weight:800;color:#1e8449;text-transform:uppercase;
                                 letter-spacing:1px;margin-bottom:3px">
-                      Enregistrement réussi
+                      Changes saved
                     </div>
                     <div style="font-size:12px;color:#145a32;line-height:1.6">
-                      <strong>{_nr}</strong> cellule{"s" if _nr != 1 else ""}
-                      modifiée{"s" if _nr != 1 else ""} sauvegardée{"s" if _nr != 1 else ""}
-                      dans la session.
-                      Les données sont prêtes pour l'export PDF et CSV.
+                      <strong>{_nr}</strong> field{"s" if _nr != 1 else ""}
+                      modified and saved to session.
+                      Data is ready for PDF and CSV export.
                     </div>
                   </div>
                 </div>
@@ -2735,61 +3081,74 @@ with tab_qual:
                             display:flex;align-items:center;gap:10px">
                   <span style="font-size:18px">ℹ️</span>
                   <span style="font-size:12px;color:#5d4037">
-                    Aucune modification détectée par rapport au dernier enregistrement.
+                    No changes detected compared to last save.
                   </span>
                 </div>
                 """, unsafe_allow_html=True)
 
     # ── Section export récap (sous le tableau) ───────────────────────────────
     if _qual_n > 0:
-        st.markdown(f'<div class="te-section">Synthèse des Arrêts Qualifiés</div>',
+        st.markdown(f'<div class="te-section">Qualified Stops Summary</div>',
                     unsafe_allow_html=True)
 
         _q_all = df[df[["Shift","Key Failure"]].apply(_is_qualified, axis=1)]
         _ts    = datetime.now().strftime("%Y%m%d_%H%M")
 
-        # Métriques rapides
-        _qm1, _qm2, _qm3 = st.columns(3)
+        # Compute total maintenance cost from session_state
+        _cost_total_q = 0.0
+        if st.session_state.edited_df is not None and "Total Part Cost" in st.session_state.edited_df.columns:
+            _cost_total_q = float(
+                pd.to_numeric(st.session_state.edited_df["Total Part Cost"],
+                              errors="coerce").fillna(0).sum())
+
+        # Quick metrics — 4 cols
+        _qm1, _qm2, _qm3, _qm4 = st.columns(4)
         with _qm1:
-            st.metric("✅ Arrêts qualifiés", f"{_qual_n} / {_stop_n}",
-                      delta=f"{_pct_q:.0f}% du total")
+            st.metric("✅ Qualified Stops", f"{_qual_n} / {_stop_n}",
+                      delta=f"{_pct_q:.0f}% of total")
         with _qm2:
             _uid_n = int((_q_all.get("User ID", pd.Series(dtype=str))
                            .astype(str).str.strip()
                            .replace({"":pd.NA,"nan":pd.NA,"None":pd.NA})
                            .notna()).sum())
-            st.metric("👤 Avec User ID", f"{_uid_n} lignes",
-                      delta="signées" if _uid_n > 0 else "aucune")
+            st.metric("👤 With User ID", f"{_uid_n} rows",
+                      delta="signed" if _uid_n > 0 else "none")
         with _qm3:
             _kf_n = int((_q_all.get("Key Failure", pd.Series(dtype=str))
                           .astype(str).str.strip()
                           .replace({"":pd.NA,"nan":pd.NA,"None":pd.NA})
                           .notna()).sum())
-            st.metric("🔧 Key Failure renseignée", f"{_kf_n} lignes")
+            st.metric("🔧 Key Failure filled", f"{_kf_n} rows")
+        with _qm4:
+            st.metric("💰 Spare Parts Cost",
+                      f"€ {_cost_total_q:,.2f}",
+                      delta="recorded" if _cost_total_q > 0 else "no costs yet")
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # Export CSV arrêts qualifiés uniquement
+        # Export CSV — all columns including cost
         _q_exp_cols = [c for c in [
             COL_MACHINE, COL_DATE, COL_STATUS,
-            "mttr_h", "User ID", "Shift", "Key Failure"
+            "mttr_h", "User ID", "Shift", "Key Failure",
+            "Issue Description", "Action Taken",
+            "Spare Part Ref", "Qty", "Unit Price (€)", "Total Part Cost",
         ] if c in _q_all.columns]
 
         _ec1, _ec2 = st.columns(2)
         with _ec1:
             st.download_button(
-                f"⬇ CSV — {_qual_n} ARRÊTS QUALIFIÉS",
+                f"⬇ CSV — {_qual_n} QUALIFIED STOP(S)",
                 data=_q_all[_q_exp_cols].to_csv(
                     index=False, sep=";").encode("utf-8"),
                 file_name=f"TE_arrets_qualifies_{_ts}.csv",
                 mime="text/csv",
                 use_container_width=True,
-                help="Export CSV des arrêts qualifiés uniquement")
+                help="Export CSV of qualified stops only")
         with _ec2:
-            st.info(f"📄 **{_qual_n}** arrêts qualifiés · "
-                    f"Le rapport PDF complet est disponible dans l'onglet **📊 KPIs** · "
-                    f"L'export Excel complet (toutes données + qualif) "
-                    f"est disponible via le bouton **📥 EXCEL** ci-dessus.")
+            st.info(f"📄 **{_qual_n}** qualified stop(s) · "
+                    f"Full PDF report available in **📊 KPIs** tab · "
+                    f"Full Excel export (all data + qualification) "
+                    f"available via the **📥 EXCEL** button above.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  FOOTER
