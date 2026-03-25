@@ -1,4 +1,4 @@
- """
+"""
 
   TE Connectivity — Stamping Department
   Stamping CMMS — Full Version + Persistent Storage
