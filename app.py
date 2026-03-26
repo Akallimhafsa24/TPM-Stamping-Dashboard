@@ -38,6 +38,7 @@ st.set_page_config(
 #  PERSISTENT STORAGE PATH
 # ──────────────────────────────────────────────────────────────────────────────
 PERSISTENT_CSV = "tpm_data_persistent.csv"
+ARCHIVE_DIR    = "data_archive"        # auto-archive on every new import
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  COLONNES SOURCE (noms exacts du fichier Hydra)
@@ -75,14 +76,28 @@ PALETTE = [TE_ORANGE, TE_NAVY, TE_RED, "#8E44AD", TE_GREEN, "#16A085", "#D4AC0D"
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600;700;800&family=Barlow+Condensed:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap');
-@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
 
-html, body, .stApp {{
+/* ══════════════════════════════════════════════════
+   ANTI-DARK MODE — Force Light Mode unconditionally
+   ══════════════════════════════════════════════════ */
+:root {{
+    color-scheme: light only !important;
+}}
+html, body, .stApp, [data-testid="stAppViewContainer"],
+[data-testid="stMain"], [data-testid="block-container"] {{
     background-color: {TE_BG} !important;
     font-family: 'Barlow', sans-serif;
+    color-scheme: light !important;
 }}
+@media (prefers-color-scheme: dark) {{
+    html, body, .stApp {{ background-color: {TE_BG} !important; }}
+    [data-testid="stMain"], [data-testid="block-container"] {{
+        background-color: {TE_BG} !important;
+    }}
+    input, textarea, select {{ background: white !important; color: #1C1C1C !important; }}
+}}
+
 #MainMenu, footer {{ visibility: hidden; }}
-/* Hide Streamlit header bar but keep sidebar toggle accessible */
 header[data-testid="stHeader"] {{ background: transparent !important; }}
 .block-container {{ padding-top: 0 !important; max-width: 100% !important; }}
 
@@ -423,12 +438,34 @@ section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] small {
     transform: translateY(-1px) !important;
 }}
 
-/* Native Streamlit sidebar toggle — only tint the icon, touch nothing else */
+/* ── Sidebar toggle — native buttons, minimal styling only ── */
 [data-testid="collapsedControl"] button svg {{
     color: {TE_ORANGE} !important; fill: {TE_ORANGE} !important;
 }}
 [data-testid="stSidebarCollapseButton"] button svg {{
     color: {TE_ORANGE} !important; fill: {TE_ORANGE} !important;
+}}
+/* ── Custom HIDE button inside sidebar ── */
+[data-testid="stSidebar"] .te-hide-btn button {{
+    background: linear-gradient(135deg, {TE_ORANGE} 0%, {TE_DARK} 100%) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-family: 'Barlow Condensed', sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 800 !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    width: 100% !important;
+    padding: 10px 16px !important;
+    box-shadow: 0 3px 12px rgba(232,101,10,0.4) !important;
+    transition: all 0.2s ease !important;
+    cursor: pointer !important;
+}}
+[data-testid="stSidebar"] .te-hide-btn button:hover {{
+    background: linear-gradient(135deg, {TE_ORANGE3} 0%, {TE_ORANGE} 100%) !important;
+    box-shadow: 0 5px 20px rgba(232,101,10,0.65) !important;
+    transform: translateY(-1px) !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -479,10 +516,61 @@ def load_persistent() -> pd.DataFrame:
 
 
 def save_persistent(df_to_save: pd.DataFrame):
+    """Save main persistent CSV (overwrite). No backup copy on save."""
     try:
         df_to_save.to_csv(PERSISTENT_CSV, index=False, encoding="utf-8")
     except Exception as e:
         st.error(f" Could not save to disk: {e}")
+
+
+def archive_import(df_source: pd.DataFrame):
+    """
+    On every new file import, save a copy to data_archive/ named:
+    'DATA [DateMin] - [DateMax].csv'
+    using the min/max of plant_shift_date column.
+    """
+    try:
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        # Extract date range
+        if COL_DATE in df_source.columns:
+            _dates = pd.to_datetime(df_source[COL_DATE], errors="coerce").dropna()
+            if len(_dates):
+                d_min = _dates.min().strftime("%d-%m-%Y")
+                d_max = _dates.max().strftime("%d-%m-%Y")
+            else:
+                d_min = d_max = datetime.now().strftime("%d-%m-%Y")
+        else:
+            d_min = d_max = datetime.now().strftime("%d-%m-%Y")
+        fname = f"DATA {d_min} - {d_max}.csv"
+        fpath = os.path.join(ARCHIVE_DIR, fname)
+        df_source.to_csv(fpath, index=False, encoding="utf-8")
+        return fname
+    except Exception:
+        return None
+
+
+def list_archive() -> list:
+    """
+    Return list of (display_label, filepath) from data_archive/, newest first.
+    Label = filename without .csv extension.
+    """
+    if not os.path.exists(ARCHIVE_DIR):
+        return []
+    files = sorted(
+        [f for f in os.listdir(ARCHIVE_DIR) if f.endswith(".csv")],
+        reverse=True
+    )
+    return [(f.replace(".csv", ""), os.path.join(ARCHIVE_DIR, f)) for f in files]
+
+
+def load_archive(filepath: str) -> pd.DataFrame:
+    try:
+        df_b = pd.read_csv(filepath, low_memory=False)
+        df_b.columns = [str(c).strip() for c in df_b.columns]
+        return df_b
+    except Exception as e:
+        st.error(f"Cannot load archive file: {e}")
+        return pd.DataFrame()
 
 
 def merge_qualifications(df_new: pd.DataFrame,
@@ -651,17 +739,20 @@ def export_excel(df: pd.DataFrame, kpi: dict) -> bytes:
 #  PLOTLY BASE LAYOUT
 # ──────────────────────────────────────────────────────────────────────────────
 PL = dict(
-    plot_bgcolor=TE_WHITE, paper_bgcolor=TE_WHITE,
+    plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
     font=dict(family="Barlow, sans-serif", color="#4A3020", size=11),
     margin=dict(l=20, r=20, t=40, b=20),
     xaxis=dict(gridcolor="#F0E8E0", showgrid=True, zeroline=False,
-               linecolor="#EDE0D4", tickfont=dict(size=10, color="#9A7A60")),
+               linecolor="#EDE0D4", tickfont=dict(size=10, color="#9A7A60"),
+               color="#4A3020"),
     yaxis=dict(gridcolor="#F0E8E0", showgrid=True, zeroline=False,
-               linecolor="#EDE0D4", tickfont=dict(size=10, color="#9A7A60")),
-    legend=dict(bgcolor=TE_WHITE, bordercolor="#EDE0D4", borderwidth=1,
-                font=dict(size=11)),
+               linecolor="#EDE0D4", tickfont=dict(size=10, color="#9A7A60"),
+               color="#4A3020"),
+    legend=dict(bgcolor="#FFFFFF", bordercolor="#EDE0D4", borderwidth=1,
+                font=dict(size=11, color="#4A3020")),
     hoverlabel=dict(bgcolor=TE_BLACK, bordercolor=TE_BLACK,
                     font=dict(color="white", family="JetBrains Mono", size=11)),
+    template="plotly_white",
 )
 PCONF = dict(displayModeBar=False, responsive=True)
 
@@ -679,11 +770,8 @@ def _hex_to_rgba(hex_color: str, alpha: float = 0.1) -> str:
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  SIDEBAR
-#  Note: hide/show is handled natively by Streamlit's built-in collapse button
-#  (styled orange via CSS above). No custom CSS hacks needed.
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-
 
     st.markdown(f"""
     <div style="background:rgba(232,101,10,0.12);border:1px solid rgba(232,101,10,0.35);
@@ -694,30 +782,46 @@ with st.sidebar:
         </div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:7px;
                     letter-spacing:2px;color:rgba(255,255,255,0.4);margin-top:4px">
-            STAMPING CMMS
+            STAMPING CMMS · TANGIER
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Navigation ──
     st.markdown(f'<p style="font-size:9px;font-weight:700;letter-spacing:3px;'
                 f'text-transform:uppercase;color:{TE_ORANGE};margin-bottom:6px">'
                 f'NAVIGATION</p>', unsafe_allow_html=True)
     nav_choice = st.radio(
-        "",
-        options=["Dashboard", "History"],
+        "", options=["Dashboard", "History"],
         index=0, key="nav_radio", label_visibility="collapsed"
     )
-
     st.markdown("---")
 
+    # ── Import Data ──
     st.markdown(f'<p style="font-size:9px;font-weight:700;letter-spacing:3px;'
                 f'text-transform:uppercase;color:{TE_ORANGE};margin-bottom:6px">'
                 f'IMPORT DATA</p>', unsafe_allow_html=True)
-
     uploaded = st.file_uploader(
         "", type=["csv", "xlsx", "xls"],
         key="sidebar_uploader", label_visibility="collapsed"
     )
+
+    # ── Auto-load indicator ──
+    if os.path.exists(PERSISTENT_CSV):
+        _sz = os.path.getsize(PERSISTENT_CSV)
+        _mt = datetime.fromtimestamp(os.path.getmtime(PERSISTENT_CSV))
+        st.markdown(f"""
+        <div style="background:rgba(39,174,96,0.18);border:1px solid rgba(39,174,96,0.5);
+                    border-radius:8px;padding:9px 12px;margin:10px 0 2px">
+          <div style="font-size:11px;font-weight:700;color:#4AE080;margin-bottom:2px">
+            ✅ Data loaded from last session
+          </div>
+          <div style="font-size:9px;color:rgba(240,232,223,0.6);
+                      font-family:'JetBrains Mono',monospace;letter-spacing:0.5px">
+            {_sz//1024} KB · {_mt.strftime('%d/%m/%Y %H:%M')}
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -725,6 +829,48 @@ with st.sidebar:
         st.markdown(f'<p style="font-size:9px;font-weight:700;letter-spacing:3px;'
                     f'text-transform:uppercase;color:{TE_ORANGE};margin-bottom:6px">'
                     f'FILTERS</p>', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    #  📌 DATA LIBRARY
+    # ══════════════════════════════════════════════════════════════
+    _archive_files = list_archive()
+    if _archive_files:
+        st.markdown("---")
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-size:14px">📌</span>
+          <span style="font-size:9px;font-weight:700;letter-spacing:3px;
+                       text-transform:uppercase;color:{TE_ORANGE}">DATA LIBRARY</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for _albl, _afpath in _archive_files:
+            # Highlight active file
+            _is_active = (st.session_state.get("library_active") == _afpath)
+            _bg = f"rgba(232,101,10,0.22)" if _is_active else "rgba(255,255,255,0.04)"
+            _bdr = TE_ORANGE if _is_active else "rgba(232,101,10,0.2)"
+            st.markdown(f"""
+            <div style="background:{_bg};border:1px solid {_bdr};
+                        border-radius:7px;padding:7px 10px;margin-bottom:4px">
+              <div style="font-size:10px;color:#F0D0A0;font-family:'JetBrains Mono',monospace;
+                          line-height:1.4;word-break:break-all">
+                📄 {_albl}
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("▶ Load", key=f"arch_{_afpath[-20:].replace('/','_').replace('.','_')}",
+                         use_container_width=True):
+                _lib_df = load_archive(_afpath)
+                if not _lib_df.empty:
+                    st.session_state.library_df     = _lib_df
+                    st.session_state.library_active = _afpath
+                    st.session_state.edited_df      = None
+                    st.session_state.last_file      = f"__library__{_afpath}"
+                    st.rerun()
+
+    if st.session_state.get("_archive_saved"):
+        _saved_name = st.session_state.pop("_archive_saved")
+        st.success(f"✅ Archived: {_saved_name}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -990,16 +1136,29 @@ if nav_choice == "History":
         )
         _confirm1, _confirm2, _confirm3 = st.columns([2, 1, 2])
         with _confirm1:
-            if st.button(" Yes, Delete Everything", key="btn_reset_confirm",
-                         help="Confirm permanent deletion"):
+            if st.button(" Yes, Reset Everything", key="btn_reset_confirm",
+                         help="Permanently reset all persistent data"):
                 try:
-                    os.remove(PERSISTENT_CSV)
+                    # Windows-safe: overwrite with empty DataFrame (same columns)
+                    # instead of os.remove() which causes WinError 32 on locked files
+                    _empty_cols = []
+                    if os.path.exists(PERSISTENT_CSV):
+                        try:
+                            _empty_cols = pd.read_csv(
+                                PERSISTENT_CSV, nrows=0, low_memory=False
+                            ).columns.tolist()
+                        except Exception:
+                            pass
+                    pd.DataFrame(columns=_empty_cols).to_csv(
+                        PERSISTENT_CSV, index=False, encoding="utf-8"
+                    )
                     st.session_state.confirm_reset = False
-                    st.session_state.edited_df = None
-                    st.success(" History deleted successfully. The persistent file has been removed.")
+                    st.session_state.edited_df     = None
+                    st.session_state.library_df    = None
+                    st.success(" History reset. Persistent file cleared (columns preserved).")
                     st.rerun()
                 except Exception as _e:
-                    st.error(f" Could not delete file: {_e}")
+                    st.error(f" Could not reset: {_e}")
         with _confirm2:
             if st.button(" Cancel", key="btn_reset_cancel"):
                 st.session_state.confirm_reset = False
@@ -1012,7 +1171,14 @@ if nav_choice == "History":
 #  PAGE: DASHBOARD (default)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if uploaded is None:
+if uploaded is None and not st.session_state.get("library_df") is not None:
+    # Check if a library file was loaded
+    pass
+
+# ── Resolve active data source ────────────────────────────────────────────────
+_using_library = (uploaded is None and st.session_state.get("library_df") is not None)
+
+if uploaded is None and not _using_library:
     df_persist_check = load_persistent()
     _persist_info = ""
     if not df_persist_check.empty:
@@ -1021,7 +1187,7 @@ if uploaded is None:
             f'border-radius:8px;padding:10px 16px;margin-top:12px;'
             f'font-size:12px;color:#145a32">'
             f' Persistent file found: <strong>{len(df_persist_check):,} rows</strong>'
-            f' — import a Hydra file to continue with saved qualifications.'
+            f' — import a Hydra file or load from 📌 DATA LIBRARY.'
             f'</div>'
         )
     st.markdown(f"""
@@ -1030,17 +1196,14 @@ if uploaded is None:
     <div style="background:white;border:2px dashed {TE_ORANGE};border-radius:18px;
                 padding:52px 50px;text-align:center;max-width:540px;
                 box-shadow:0 6px 32px rgba(232,101,10,0.12)">
-        <!-- TE Connectivity Badge -->
         <div style="display:inline-flex;align-items:center;gap:10px;
                     background:linear-gradient(135deg,{TE_ORANGE},{TE_DARK});
                     border-radius:10px;padding:10px 22px;
                     font-family:'Barlow Condensed',sans-serif;font-size:17px;
                     font-weight:900;letter-spacing:2.5px;color:white;
-                    margin-bottom:24px;
-                    box-shadow:0 4px 16px rgba(232,101,10,0.40)">
+                    margin-bottom:24px;box-shadow:0 4px 16px rgba(232,101,10,0.40)">
             ≡ TE CONNECTIVITY
         </div>
-        <!-- Main Title -->
         <div style="font-family:'Barlow Condensed',sans-serif;font-size:32px;
                     font-weight:800;color:{TE_BLACK};text-transform:uppercase;
                     letter-spacing:2px;margin-bottom:8px;line-height:1.1">
@@ -1050,10 +1213,10 @@ if uploaded is None:
                     background:linear-gradient(90deg,{TE_ORANGE},{TE_ORANGE3});
                     border-radius:2px;margin:0 auto 18px auto"></div>
         <div style="font-size:13px;color:#9A7A60;margin-bottom:24px;line-height:1.8">
-            Import your Hydra MES file<br>
-            to visualize the maintenance KPIs of Bruderer presses.<br>
+            Import your Hydra MES file or load from the<br>
+            <strong style="color:{TE_ORANGE}">📌 DATA LIBRARY</strong> in the sidebar.<br>
             <span style="font-size:11px;color:{TE_ORANGE};font-weight:600">
-                ↑ Use the sidebar to import data
+                ↑ Use the sidebar to import or restore data
             </span>
         </div>
         <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
@@ -1077,11 +1240,29 @@ if uploaded is None:
 #  DATA PREP — Load file + merge with persistent qualifications
 # ──────────────────────────────────────────────────────────────────────────────
 
-if "last_file" not in st.session_state or st.session_state.last_file != uploaded.name:
-    st.session_state.last_file = uploaded.name
-    st.session_state.edited_df = None
+if _using_library:
+    # ── Load from DATA LIBRARY ──
+    df_raw = st.session_state.library_df.copy()
+    df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
+    _src_label = st.session_state.get("library_active", "Library file")
+    # Reset edited_df when switching library file
+    _lib_key = f"__lib__{_src_label}"
+    if st.session_state.get("last_file") != _lib_key:
+        st.session_state.last_file = _lib_key
+        st.session_state.edited_df = None
+else:
+    # ── Load from file uploader ──
+    if "last_file" not in st.session_state or st.session_state.last_file != uploaded.name:
+        st.session_state.last_file = uploaded.name
+        st.session_state.edited_df = None
+        # ── AUTO-ARCHIVE on new import ──────────────────────────
+        _raw_for_archive = load_data(uploaded)
+        if not _raw_for_archive.empty:
+            _arc_name = archive_import(_raw_for_archive)
+            if _arc_name:
+                st.session_state["_archive_saved"] = _arc_name
+    df_raw = load_data(uploaded)
 
-df_raw = load_data(uploaded)
 if df_raw.empty:
     st.stop()
 
@@ -1188,12 +1369,15 @@ with st.sidebar:
         dr = None
 
     st.markdown("---")
+    _src_name = (os.path.basename(st.session_state.get("library_active","Library"))
+                 if _using_library else uploaded.name)
     st.markdown(f"""
     <div style="font-size:10px;color:rgba(255,255,255,0.3);
                 font-family:'JetBrains Mono',monospace;letter-spacing:1px">
-         {uploaded.name}<br>
+         {_src_name}<br>
          {len(df_raw):,} rows<br>
-         Persistent: {" " + str(os.path.exists(PERSISTENT_CSV)) if os.path.exists(PERSISTENT_CSV) else " none"}<br><br>
+         Persistent: {"✓" if os.path.exists(PERSISTENT_CSV) else "none"}<br>
+         Archive: {len(list_archive())} file(s)<br><br>
         TE CONNECTIVITY © {datetime.now().year}
     </div>
     """, unsafe_allow_html=True)
@@ -2760,9 +2944,12 @@ with tab_qual:
                 _df_full.to_excel(_writer, sheet_name="Full Dataset", index=False)
                 _style_sheet(_writer.sheets["Full Dataset"], _df_full)
 
-                _mask_stops = (_src["mttr_h"] > 0 if "mttr_h" in _src.columns
-                               else pd.Series(True, index=_src.index))
-                _stops = _src[_mask_stops].copy()
+                # ── Stops sheet: ONLY real stops (mttr_h > 0), NO production rows ──
+                _mask_stops = (
+                    pd.to_numeric(_src.get("mttr_h", pd.Series([0]*len(_src))),
+                                  errors="coerce").fillna(0) > 0
+                )
+                _stops = _src[_mask_stops].copy().reset_index(drop=True)
                 _stops_cols = [c for c in [
                     COL_MACHINE, COL_DATE, COL_STATUS, "MTTR (h)",
                     "User ID", "Shift", "Key Failure",
