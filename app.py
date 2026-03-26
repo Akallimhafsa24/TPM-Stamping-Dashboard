@@ -81,7 +81,9 @@ html, body, .stApp {{
     background-color: {TE_BG} !important;
     font-family: 'Barlow', sans-serif;
 }}
-#MainMenu, footer, header {{ visibility: hidden; }}
+#MainMenu, footer {{ visibility: hidden; }}
+/* Hide Streamlit header bar but keep sidebar toggle accessible */
+header[data-testid="stHeader"] {{ background: transparent !important; }}
 .block-container {{ padding-top: 0 !important; max-width: 100% !important; }}
 
 [data-testid="stSidebar"] {{
@@ -92,6 +94,20 @@ html, body, .stApp {{
 [data-testid="stSidebar"] * {{
     color: #F0E8DF !important;
     font-family: 'Barlow', sans-serif !important;
+}}
+/* Restore the collapse button so it stays clickable and visible */
+[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {{
+    background: transparent !important;
+}}
+[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] button {{
+    color: {TE_ORANGE} !important;
+    background: transparent !important;
+    opacity: 1 !important;
+}}
+[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] button svg {{
+    color: {TE_ORANGE} !important;
+    fill: {TE_ORANGE} !important;
+    stroke: {TE_ORANGE} !important;
 }}
 [data-testid="stSidebar"] > div:first-child {{ padding: 18px 16px !important; }}
 [data-testid="stSidebar"] hr {{ border-color: #3D2A18 !important; }}
@@ -407,54 +423,12 @@ section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] small {
     transform: translateY(-1px) !important;
 }}
 
-/* ── Floating "Show Sidebar" tab — fixed on left edge when sidebar is hidden ── */
-.sidebar-show-float {{
-    position: fixed !important;
-    top: 50% !important;
-    left: 0px !important;
-    transform: translateY(-50%) !important;
-    z-index: 99999 !important;
-    writing-mode: vertical-rl !important;
-    text-orientation: mixed !important;
+/* Native Streamlit sidebar toggle — only tint the icon, touch nothing else */
+[data-testid="collapsedControl"] button svg {{
+    color: {TE_ORANGE} !important; fill: {TE_ORANGE} !important;
 }}
-.sidebar-show-float button {{
-    background: linear-gradient(180deg, {TE_ORANGE} 0%, {TE_DARK} 100%) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 0 8px 8px 0 !important;
-    font-family: 'Barlow Condensed', sans-serif !important;
-    font-size: 13px !important;
-    font-weight: 800 !important;
-    letter-spacing: 2px !important;
-    text-transform: uppercase !important;
-    padding: 20px 10px !important;
-    width: 36px !important;
-    min-height: 120px !important;
-    cursor: pointer !important;
-    box-shadow: 4px 0 16px rgba(232,101,10,0.5) !important;
-    transition: all 0.2s ease !important;
-    writing-mode: vertical-lr !important;
-}}
-.sidebar-show-float button:hover {{
-    background: linear-gradient(180deg, {TE_ORANGE3} 0%, {TE_ORANGE} 100%) !important;
-    width: 44px !important;
-    box-shadow: 6px 0 24px rgba(232,101,10,0.7) !important;
-}}
-
-/* ── "Show Sidebar" button in main content (fallback) ── */
-[data-testid="stButton"].show-sidebar-main > button {{
-    background: linear-gradient(135deg, {TE_ORANGE}, {TE_DARK}) !important;
-    color: white !important;
-    border: 2px solid {TE_ORANGE3} !important;
-    border-radius: 0 10px 10px 0 !important;
-    font-family: 'Barlow Condensed', sans-serif !important;
-    font-size: 12px !important;
-    font-weight: 800 !important;
-    letter-spacing: 1.5px !important;
-    text-transform: uppercase !important;
-    padding: 14px 18px !important;
-    box-shadow: 4px 0 18px rgba(232,101,10,0.5) !important;
-    min-height: 56px !important;
+[data-testid="stSidebarCollapseButton"] button svg {{
+    color: {TE_ORANGE} !important; fill: {TE_ORANGE} !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -704,66 +678,12 @@ def _hex_to_rgba(hex_color: str, alpha: float = 0.1) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  SIDEBAR STATE INIT
-# ──────────────────────────────────────────────────────────────────────────────
-if "sidebar_open" not in st.session_state:
-    st.session_state.sidebar_open = True
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  SIDEBAR VISIBILITY STATE
-# ──────────────────────────────────────────────────────────────────────────────
-if not st.session_state.get("sidebar_open", True):
-    st.markdown("""
-    <style>
-    [data-testid="stSidebar"] {
-        width: 0px !important;
-        min-width: 0px !important;
-        max-width: 0px !important;
-        overflow: hidden !important;
-        padding: 0 !important;
-        border: none !important;
-        visibility: hidden !important;
-    }
-    [data-testid="stSidebar"] > div { display: none !important; }
-    .block-container { padding-left: 1rem !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
 #  SIDEBAR
+#  Note: hide/show is handled natively by Streamlit's built-in collapse button
+#  (styled orange via CSS above). No custom CSS hacks needed.
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # ── Hide sidebar button — slim strip at very top ──
-    st.markdown(f"""
-    <style>
-    [data-testid="stSidebar"] .hide-btn-wrap > div[data-testid="stButton"] > button {{
-        background: rgba(255,255,255,0.06) !important;
-        color: rgba(240,232,223,0.55) !important;
-        border: 1px solid rgba(232,101,10,0.25) !important;
-        border-radius: 6px !important;
-        font-family: 'Barlow Condensed', sans-serif !important;
-        font-size: 11px !important;
-        font-weight: 700 !important;
-        letter-spacing: 2px !important;
-        text-transform: uppercase !important;
-        padding: 5px 10px !important;
-        height: 28px !important;
-        width: 100% !important;
-        text-align: right !important;
-        transition: all 0.2s ease !important;
-    }}
-    [data-testid="stSidebar"] .hide-btn-wrap > div[data-testid="stButton"] > button:hover {{
-        background: rgba(232,101,10,0.18) !important;
-        color: {TE_ORANGE} !important;
-        border-color: rgba(232,101,10,0.6) !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-    st.markdown('<div class="hide-btn-wrap">', unsafe_allow_html=True)
-    if st.button("Hide  <<", key="btn_hide_sidebar", use_container_width=True):
-        st.session_state.sidebar_open = False
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+
 
     st.markdown(f"""
     <div style="background:rgba(232,101,10,0.12);border:1px solid rgba(232,101,10,0.35);
@@ -806,83 +726,6 @@ with st.sidebar:
                     f'text-transform:uppercase;color:{TE_ORANGE};margin-bottom:6px">'
                     f'FILTERS</p>', unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SHOW MENU BANNER — rendered when sidebar is hidden, on every page
-# ══════════════════════════════════════════════════════════════════════════════
-if not st.session_state.get("sidebar_open", True):
-    st.markdown(f"""
-    <style>
-    /* Show Menu button — large orange pro button */
-    div[data-testid="stButton"][class*="show-menu-btn"] > button,
-    .show-menu-wrap > div[data-testid="stButton"] > button {{
-        background: linear-gradient(135deg, {TE_ORANGE} 0%, {TE_DARK} 100%) !important;
-        color: white !important;
-        border: 2px solid {TE_ORANGE3} !important;
-        border-radius: 12px !important;
-        font-family: 'Barlow Condensed', sans-serif !important;
-        font-size: 16px !important;
-        font-weight: 900 !important;
-        letter-spacing: 3px !important;
-        text-transform: uppercase !important;
-        padding: 14px 36px !important;
-        height: 52px !important;
-        box-shadow: 0 4px 22px rgba(232,101,10,0.55), 0 0 0 3px rgba(232,101,10,0.12) !important;
-        transition: all 0.22s ease !important;
-        animation: glow-pulse 2.2s ease-in-out infinite !important;
-    }}
-    .show-menu-wrap > div[data-testid="stButton"] > button:hover {{
-        background: linear-gradient(135deg, #F0934A 0%, {TE_ORANGE} 100%) !important;
-        box-shadow: 0 6px 32px rgba(232,101,10,0.8), 0 0 0 5px rgba(232,101,10,0.18) !important;
-        transform: translateY(-2px) !important;
-    }}
-    @keyframes glow-pulse {{
-        0%,100% {{ box-shadow: 0 4px 22px rgba(232,101,10,0.55), 0 0 0 3px rgba(232,101,10,0.12); }}
-        50%      {{ box-shadow: 0 4px 30px rgba(232,101,10,0.85), 0 0 0 7px rgba(232,101,10,0.06); }}
-    }}
-    /* Banner container */
-    .show-menu-banner {{
-        display: flex;
-        align-items: center;
-        gap: 20px;
-        background: linear-gradient(135deg, {TE_BLACK} 0%, #2A1A0A 100%);
-        border: 1px solid rgba(232,101,10,0.35);
-        border-left: 5px solid {TE_ORANGE};
-        border-radius: 12px;
-        padding: 14px 24px;
-        margin-bottom: 18px;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.18);
-    }}
-    .show-menu-banner-text {{
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 2px;
-        text-transform: uppercase;
-        color: rgba(240,220,200,0.6);
-    }}
-    .show-menu-banner-text strong {{
-        color: {TE_ORANGE};
-        font-size: 12px;
-    }}
-    </style>
-    <div class="show-menu-banner">
-        <div class="show-menu-banner-text">
-            <strong>≡ TE CONNECTIVITY</strong><br>
-            Sidebar is hidden — click to restore navigation
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    _sm_c1, _sm_c2, _sm_c3 = st.columns([2, 3, 6])
-    with _sm_c2:
-        st.markdown('<div class="show-menu-wrap">', unsafe_allow_html=True)
-        if st.button(">> Show Menu", key="btn_show_menu", use_container_width=True):
-            st.session_state.sidebar_open = True
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE: HISTORY
@@ -1182,33 +1025,47 @@ if uploaded is None:
             f'</div>'
         )
     st.markdown(f"""
-    <div style="display:flex;justify-content:center;margin-top:60px">
-    <div style="background:white;border:2px dashed #F0C8A0;border-radius:18px;
-                padding:48px 44px;text-align:center;max-width:520px;
-                box-shadow:0 4px 24px rgba(0,0,0,0.07)">
-        <div style="display:inline-flex;align-items:center;gap:8px;
-                    background:{TE_ORANGE};border-radius:8px;padding:8px 18px;
-                    font-family:'Barlow Condensed',sans-serif;font-size:16px;
-                    font-weight:800;letter-spacing:2px;color:white;margin-bottom:20px">
+    <div style="display:flex;justify-content:center;align-items:center;
+                min-height:60vh;margin-top:20px">
+    <div style="background:white;border:2px dashed {TE_ORANGE};border-radius:18px;
+                padding:52px 50px;text-align:center;max-width:540px;
+                box-shadow:0 6px 32px rgba(232,101,10,0.12)">
+        <!-- TE Connectivity Badge -->
+        <div style="display:inline-flex;align-items:center;gap:10px;
+                    background:linear-gradient(135deg,{TE_ORANGE},{TE_DARK});
+                    border-radius:10px;padding:10px 22px;
+                    font-family:'Barlow Condensed',sans-serif;font-size:17px;
+                    font-weight:900;letter-spacing:2.5px;color:white;
+                    margin-bottom:24px;
+                    box-shadow:0 4px 16px rgba(232,101,10,0.40)">
             ≡ TE CONNECTIVITY
         </div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-size:24px;
-                    font-weight:800;color:#1C1C1C;text-transform:uppercase;
-                    letter-spacing:1px;margin-bottom:12px">Stamping CMMS</div>
-        <div style="font-size:13px;color:#9A7A60;margin-bottom:20px;line-height:1.7">
-            Import your Hydra MES file<br>
-            to visualize the maintenance KPIs of Bruderer presses.
+        <!-- Main Title -->
+        <div style="font-family:'Barlow Condensed',sans-serif;font-size:32px;
+                    font-weight:800;color:{TE_BLACK};text-transform:uppercase;
+                    letter-spacing:2px;margin-bottom:8px;line-height:1.1">
+            STAMPING CMMS
         </div>
-        <div>
-            <span style="background:#FFF0E6;border:1px solid #F5C8A0;color:#B36030;
-                         font-size:11px;font-weight:600;border-radius:20px;
-                         padding:4px 12px;margin:3px;display:inline-block">.csv comma</span>
-            <span style="background:#FFF0E6;border:1px solid #F5C8A0;color:#B36030;
-                         font-size:11px;font-weight:600;border-radius:20px;
-                         padding:4px 12px;margin:3px;display:inline-block">.csv semicolon</span>
-            <span style="background:#FFF0E6;border:1px solid #F5C8A0;color:#B36030;
-                         font-size:11px;font-weight:600;border-radius:20px;
-                         padding:4px 12px;margin:3px;display:inline-block">.xlsx</span>
+        <div style="width:50px;height:3px;
+                    background:linear-gradient(90deg,{TE_ORANGE},{TE_ORANGE3});
+                    border-radius:2px;margin:0 auto 18px auto"></div>
+        <div style="font-size:13px;color:#9A7A60;margin-bottom:24px;line-height:1.8">
+            Import your Hydra MES file<br>
+            to visualize the maintenance KPIs of Bruderer presses.<br>
+            <span style="font-size:11px;color:{TE_ORANGE};font-weight:600">
+                ↑ Use the sidebar to import data
+            </span>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+            <span style="background:#FFF0E6;border:1px solid {TE_ORANGE3};color:{TE_DARK};
+                         font-size:11px;font-weight:700;border-radius:20px;
+                         padding:5px 14px">.csv comma</span>
+            <span style="background:#FFF0E6;border:1px solid {TE_ORANGE3};color:{TE_DARK};
+                         font-size:11px;font-weight:700;border-radius:20px;
+                         padding:5px 14px">.csv semicolon</span>
+            <span style="background:#FFF0E6;border:1px solid {TE_ORANGE3};color:{TE_DARK};
+                         font-size:11px;font-weight:700;border-radius:20px;
+                         padding:5px 14px">.xlsx</span>
         </div>
         {_persist_info}
     </div></div>
