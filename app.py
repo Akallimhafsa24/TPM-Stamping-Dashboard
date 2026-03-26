@@ -615,19 +615,80 @@ def merge_qualifications(df_new: pd.DataFrame,
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_data(f) -> pd.DataFrame:
+    """
+    Ultra-robust file reader.
+    - Accepts UploadedFile or a file-path string.
+    - Bytes are cached in session_state to prevent double-read errors.
+    - Tries multiple CSV strategies (sep=None auto-detect, then ;, then ,).
+    - Never raises: returns empty DataFrame on any failure.
+    """
+    # ── File path (string) — for archive/library loads ─────────────
+    if isinstance(f, str):
+        try:
+            if f.lower().endswith((".xlsx", ".xls")):
+                df = pd.read_excel(f)
+            else:
+                # Try auto-detect first, then fallbacks
+                try:
+                    df = pd.read_csv(f, sep=None, engine="python",
+                                     on_bad_lines="skip", low_memory=False)
+                except Exception:
+                    try:
+                        df = pd.read_csv(f, sep=";", on_bad_lines="skip", low_memory=False)
+                    except Exception:
+                        df = pd.read_csv(f, sep=",", on_bad_lines="skip", low_memory=False)
+            df.columns = [str(c).strip() for c in df.columns]
+            return df if not df.empty else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    # ── UploadedFile — read bytes ONCE, cache to survive reruns ────
+    cache_key = f"_raw_{f.name}_{f.size}"
+    if cache_key not in st.session_state:
+        try:
+            raw = f.read()
+            st.session_state[cache_key] = raw
+        except Exception:
+            return pd.DataFrame()
+
+    raw = st.session_state.get(cache_key, b"")
+    if not raw:
+        return pd.DataFrame()
+
     name = f.name.lower()
     try:
-        if name.endswith(".csv"):
-            raw = f.read()
-            sample = raw[:2048].decode("utf-8", errors="replace")
-            sep = ";" if sample.count(";") >= sample.count(",") else ","
-            df = pd.read_csv(io.BytesIO(raw), sep=sep, encoding="utf-8", on_bad_lines="skip")
-        else:
-            df = pd.read_excel(f)
-        df.columns = [str(c).strip() for c in df.columns]
-        return df
-    except Exception as e:
-        st.error(f" File read error : `{e}`")
+        if name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(raw))
+            df.columns = [str(c).strip() for c in df.columns]
+            return df if len(df.columns) > 0 else pd.DataFrame()
+
+        # CSV: try sep=None (auto), then ;, then ,
+        for _sep, _eng in [(None, "python"), (";", "c"), (",", "c")]:
+            try:
+                _kwargs = dict(on_bad_lines="skip", low_memory=False)
+                if _sep is None:
+                    _kwargs["sep"]    = None
+                    _kwargs["engine"] = "python"
+                else:
+                    _kwargs["sep"] = _sep
+                df = pd.read_csv(io.BytesIO(raw), **_kwargs)
+                df.columns = [str(c).strip() for c in df.columns]
+                # Accept if we got at least 2 columns (not a single-col parse failure)
+                if len(df.columns) >= 2:
+                    return df
+            except Exception:
+                continue
+        # Last resort: try with utf-8-sig encoding (BOM)
+        try:
+            df = pd.read_csv(io.BytesIO(raw), sep=None, engine="python",
+                             encoding="utf-8-sig", on_bad_lines="skip")
+            df.columns = [str(c).strip() for c in df.columns]
+            if len(df.columns) >= 2:
+                return df
+        except Exception:
+            pass
+        return pd.DataFrame()
+    except Exception:
         return pd.DataFrame()
 
 
@@ -841,32 +902,64 @@ with st.sidebar:
           <span style="font-size:14px">📌</span>
           <span style="font-size:9px;font-weight:700;letter-spacing:3px;
                        text-transform:uppercase;color:{TE_ORANGE}">DATA LIBRARY</span>
+          <span style="font-size:9px;color:rgba(240,232,223,0.4);
+                       font-family:'JetBrains Mono',monospace">
+            ({len(_archive_files)} session{"s" if len(_archive_files)>1 else ""})
+          </span>
         </div>
         """, unsafe_allow_html=True)
 
-        for _albl, _afpath in _archive_files:
-            # Highlight active file
-            _is_active = (st.session_state.get("library_active") == _afpath)
-            _bg = f"rgba(232,101,10,0.22)" if _is_active else "rgba(255,255,255,0.04)"
-            _bdr = TE_ORANGE if _is_active else "rgba(232,101,10,0.2)"
-            st.markdown(f"""
-            <div style="background:{_bg};border:1px solid {_bdr};
-                        border-radius:7px;padding:7px 10px;margin-bottom:4px">
-              <div style="font-size:10px;color:#F0D0A0;font-family:'JetBrains Mono',monospace;
-                          line-height:1.4;word-break:break-all">
-                📄 {_albl}
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("▶ Load", key=f"arch_{_afpath[-20:].replace('/','_').replace('.','_')}",
-                         use_container_width=True):
-                _lib_df = load_archive(_afpath)
+        _arch_labels = [lbl for lbl, _ in _archive_files]
+        _arch_paths  = {lbl: fp for lbl, fp in _archive_files}
+
+        # ── Highlight active session ──
+        _active_lbl = ""
+        if st.session_state.get("library_active"):
+            _af = os.path.basename(st.session_state.library_active).replace(".csv","")
+            if _af in _arch_labels:
+                _active_lbl = _af
+        if _active_lbl:
+            st.markdown(
+                f'<div style="font-size:9px;color:{TE_ORANGE};font-family:'
+                f"'JetBrains Mono',monospace;margin-bottom:4px\">"
+                f"▶ Active: {_active_lbl}</div>",
+                unsafe_allow_html=True)
+
+        _sel_session = st.selectbox(
+            "📁 Select Session",
+            options=["— choose —"] + _arch_labels,
+            key="lib_selectbox",
+            label_visibility="visible"
+        )
+        _c1, _c2 = st.columns([3, 1])
+        with _c1:
+            if st.button("▶ Load", key="btn_load_library",
+                         use_container_width=True,
+                         disabled=(_sel_session == "— choose —")):
+                _lib_df = load_archive(_arch_paths[_sel_session])
                 if not _lib_df.empty:
                     st.session_state.library_df     = _lib_df
-                    st.session_state.library_active = _afpath
+                    st.session_state.library_active = _arch_paths[_sel_session]
                     st.session_state.edited_df      = None
-                    st.session_state.last_file      = f"__library__{_afpath}"
+                    st.session_state.last_file      = f"__library__{_arch_paths[_sel_session]}"
                     st.rerun()
+        with _c2:
+            if st.button("🗑", key="btn_del_archive",
+                         use_container_width=True,
+                         disabled=(_sel_session == "— choose —"),
+                         help="Delete this archive file"):
+                try:
+                    _del_path = _arch_paths[_sel_session]
+                    # Windows-safe: overwrite with empty then remove
+                    open(_del_path, "w").close()
+                    os.remove(_del_path)
+                    if st.session_state.get("library_active") == _del_path:
+                        st.session_state.library_df     = None
+                        st.session_state.library_active = None
+                    st.success(f"🗑 Deleted: {_sel_session}")
+                    st.rerun()
+                except Exception as _de:
+                    st.error(f"Cannot delete: {_de}")
 
     if st.session_state.get("_archive_saved"):
         _saved_name = st.session_state.pop("_archive_saved")
@@ -1171,25 +1264,26 @@ if nav_choice == "History":
 #  PAGE: DASHBOARD (default)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if uploaded is None and not st.session_state.get("library_df") is not None:
-    # Check if a library file was loaded
-    pass
+# ══════════════════════════════════════════════════════════════════════════════
+#  DATA SOURCE PRIORITY
+#  1st: file in uploader  →  read, archive, save to persistent
+#  2nd: library_df loaded via selectbox
+#  3rd: tpm_data_persistent.csv (auto-load on refresh)
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── Resolve active data source ────────────────────────────────────────────────
-_using_library = (uploaded is None and st.session_state.get("library_df") is not None)
+# ── Resolve which source is active ───────────────────────────────────────────
+_src = "none"
+if uploaded is not None:
+    _src = "upload"
+elif st.session_state.get("library_df") is not None:
+    _src = "library"
+elif os.path.exists(PERSISTENT_CSV):
+    _p = load_persistent()
+    if not _p.empty:
+        _src = "persistent"
 
-if uploaded is None and not _using_library:
-    df_persist_check = load_persistent()
-    _persist_info = ""
-    if not df_persist_check.empty:
-        _persist_info = (
-            f'<div style="background:#eafaf1;border:1.5px solid #a9dfbf;'
-            f'border-radius:8px;padding:10px 16px;margin-top:12px;'
-            f'font-size:12px;color:#145a32">'
-            f' Persistent file found: <strong>{len(df_persist_check):,} rows</strong>'
-            f' — import a Hydra file or load from 📌 DATA LIBRARY.'
-            f'</div>'
-        )
+# ── If nothing available → show welcome screen ───────────────────────────────
+if _src == "none":
     st.markdown(f"""
     <div style="display:flex;justify-content:center;align-items:center;
                 min-height:60vh;margin-top:20px">
@@ -1213,7 +1307,7 @@ if uploaded is None and not _using_library:
                     background:linear-gradient(90deg,{TE_ORANGE},{TE_ORANGE3});
                     border-radius:2px;margin:0 auto 18px auto"></div>
         <div style="font-size:13px;color:#9A7A60;margin-bottom:24px;line-height:1.8">
-            Import your Hydra MES file or load from the<br>
+            Import your Hydra MES file or load from<br>
             <strong style="color:{TE_ORANGE}">📌 DATA LIBRARY</strong> in the sidebar.<br>
             <span style="font-size:11px;color:{TE_ORANGE};font-weight:600">
                 ↑ Use the sidebar to import or restore data
@@ -1230,41 +1324,65 @@ if uploaded is None and not _using_library:
                          font-size:11px;font-weight:700;border-radius:20px;
                          padding:5px 14px">.xlsx</span>
         </div>
-        {_persist_info}
     </div></div>
     """, unsafe_allow_html=True)
     st.stop()
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-#  DATA PREP — Load file + merge with persistent qualifications
+#  DATA PREP — load raw data from active source
 # ──────────────────────────────────────────────────────────────────────────────
 
-if _using_library:
-    # ── Load from DATA LIBRARY ──
+if _src == "upload":
+    # ── Priority 1: Uploader ─────────────────────────────────────
+    _is_new_file = (st.session_state.get("last_file") != uploaded.name)
+    if _is_new_file:
+        _df_new = load_data(uploaded)
+        if not _df_new.empty and len(_df_new.columns) >= 2:
+            # ✅ Parse succeeded
+            _arc_name = archive_import(_df_new)
+            if _arc_name:
+                st.session_state["_archive_saved"] = _arc_name
+            save_persistent(_df_new)
+            st.session_state.library_df     = None
+            st.session_state.library_active = None
+            st.session_state.last_file      = uploaded.name
+            st.session_state.edited_df      = None
+            df_raw = _df_new.copy()
+        else:
+            # ⚠️ Parse failed — silently fall back to persistent, show soft warning
+            _fb = load_persistent()
+            if not _fb.empty:
+                st.warning(
+                    f"⚠️ Could not read **{uploaded.name}** (format issue). "
+                    f"Showing last saved session instead.",
+                    icon="⚠️"
+                )
+                df_raw = _fb
+                _src = "persistent"
+            else:
+                st.error(
+                    f"❌ Cannot read **{uploaded.name}**. "
+                    "Please check the file format (CSV comma/semicolon or XLSX)."
+                )
+                st.stop()
+    else:
+        df_raw = load_data(uploaded)    # uses cached bytes — instant
+
+elif _src == "library":
+    # ── Priority 2: Library selectbox ────────────────────────────
     df_raw = st.session_state.library_df.copy()
-    df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
-    _src_label = st.session_state.get("library_active", "Library file")
-    # Reset edited_df when switching library file
-    _lib_key = f"__lib__{_src_label}"
+    _lib_key = f"__lib__{st.session_state.get('library_active','')}"
     if st.session_state.get("last_file") != _lib_key:
         st.session_state.last_file = _lib_key
         st.session_state.edited_df = None
-else:
-    # ── Load from file uploader ──
-    if "last_file" not in st.session_state or st.session_state.last_file != uploaded.name:
-        st.session_state.last_file = uploaded.name
-        st.session_state.edited_df = None
-        # ── AUTO-ARCHIVE on new import ──────────────────────────
-        _raw_for_archive = load_data(uploaded)
-        if not _raw_for_archive.empty:
-            _arc_name = archive_import(_raw_for_archive)
-            if _arc_name:
-                st.session_state["_archive_saved"] = _arc_name
-    df_raw = load_data(uploaded)
 
-if df_raw.empty:
-    st.stop()
+else:
+    # ── Priority 3: Persistent CSV (auto-load on page refresh) ────
+    df_raw = load_persistent()
+    _pers_key = "__persistent__"
+    if st.session_state.get("last_file") != _pers_key:
+        st.session_state.last_file = _pers_key
+        st.session_state.edited_df = None
 
 df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
 
@@ -1369,8 +1487,12 @@ with st.sidebar:
         dr = None
 
     st.markdown("---")
-    _src_name = (os.path.basename(st.session_state.get("library_active","Library"))
-                 if _using_library else uploaded.name)
+    if _src == "upload" and uploaded is not None:
+        _src_name = uploaded.name
+    elif _src == "library":
+        _src_name = os.path.basename(st.session_state.get("library_active", "Library"))
+    else:
+        _src_name = os.path.basename(PERSISTENT_CSV)
     st.markdown(f"""
     <div style="font-size:10px;color:rgba(255,255,255,0.3);
                 font-family:'JetBrains Mono',monospace;letter-spacing:1px">
