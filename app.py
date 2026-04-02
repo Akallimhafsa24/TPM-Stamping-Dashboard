@@ -143,54 +143,41 @@ header[data-testid="stHeader"] {{ background: transparent !important; }}
 [data-testid="stSidebar"] [data-testid="stMultiSelect"] span[data-baseweb="tag"] span {{
     color: white !important; font-weight: 700 !important; font-size: 11px !important;
 }}
-/* ── File upload dropzone — orange dashed border ── */
-section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"],
-[data-testid="stSidebar"] [data-testid="stFileUploadDropzone"],
-[data-testid="stSidebar"] [data-testid="stFileUploader"] > section {{
-    background: rgba(232,101,10,0.05) !important;
+section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] {{
+    background: #FFF8F2 !important;
     border: 2px dashed {TE_ORANGE} !important;
     border-radius: 10px !important;
 }}
-/* Drag-and-drop text */
 section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] * {{
-    color: rgba(240,232,223,0.80) !important; opacity: 1 !important;
+    color: #5D4037 !important; opacity: 1 !important;
 }}
 section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] p,
 section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] span,
 section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] small {{
-    color: rgba(240,232,223,0.70) !important; opacity: 1 !important; font-weight: 500 !important;
+    color: #5D4037 !important; opacity: 1 !important; font-weight: 600 !important;
 }}
-/* Browse files button — Orange bg, dark brown text, ALL selectors */
+/* Browse files button — Orange background, dark brown text */
 section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] button,
 section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzoneInput"] + button,
-section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] button[kind="secondary"],
-[data-testid="stSidebar"] [data-testid="stFileUploadDropzone"] button,
-[data-testid="stSidebar"] [data-testid="stFileUploader"] button {{
+section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] button[kind="secondary"] {{
     background: {TE_ORANGE} !important;
-    background-color: {TE_ORANGE} !important;
     color: #5D4037 !important;
     border: none !important;
-    border-radius: 7px !important;
+    border-radius: 6px !important;
     font-family: 'Barlow Condensed', sans-serif !important;
     font-size: 13px !important;
-    font-weight: 800 !important;
-    letter-spacing: 0.5px !important;
-    text-transform: uppercase !important;
+    font-weight: 700 !important;
     padding: 8px 18px !important;
-    box-shadow: 0 2px 10px rgba(232,101,10,0.40) !important;
-    transition: all 0.18s ease !important;
+    box-shadow: 0 2px 8px rgba(232,101,10,0.35) !important;
+    transition: all 0.2s ease !important;
 }}
-section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] button:hover,
-[data-testid="stSidebar"] [data-testid="stFileUploadDropzone"] button:hover {{
+section[data-testid="stSidebar"] div[data-testid="stFileUploadDropzone"] button:hover {{
     background: {TE_DARK} !important;
-    background-color: {TE_DARK} !important;
     color: white !important;
-    box-shadow: 0 4px 16px rgba(232,101,10,0.60) !important;
-    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 14px rgba(232,101,10,0.55) !important;
 }}
 /* Uploaded file name row — readable text */
-section[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"],
-[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {{
+section[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {{
     color: #F0E8DF !important;
     font-family: 'JetBrains Mono', monospace !important;
     font-size: 10px !important;
@@ -501,20 +488,9 @@ section[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"],
     color: #9A7A60 !important;
     opacity: 1 !important;
 }}
-/* Main content date_input — white bg, orange border */
-.stApp [data-testid="stDateInput"] > div {{
-    border: 1.5px solid {TE_ORANGE} !important;
-    border-radius: 8px !important;
-    background: white !important;
-}}
-.stApp [data-testid="stDateInput"] input {{
-    color: #5D4037 !important;
-    background: white !important;
-    font-family: 'Barlow', sans-serif !important;
-}}
 
 /* ── Sidebar widget labels (Machines, Period, etc.)
-   Match style: Barlow Condensed, uppercase, orange, NO background ── */
+   Match style: Barlow Condensed, 9px, 700, uppercase, orange ── */
 [data-testid="stSidebar"] [data-testid="stDateInput"] label,
 [data-testid="stSidebar"] [data-testid="stMultiSelect"] label,
 [data-testid="stSidebar"] [data-testid="stSelectbox"] label,
@@ -531,34 +507,14 @@ section[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"],
     margin-bottom: 4px !important;
     /* Remove any white background capsule Streamlit adds */
     background: transparent !important;
-    background-color: transparent !important;
     padding: 0 !important;
-    border: none !important;
-    box-shadow: none !important;
 }}
-/* Kill the white wrapper divs Streamlit puts around date/widget labels */
-[data-testid="stSidebar"] [data-testid="stDateInput"] > div:first-child,
+/* Kill the white wrapper Streamlit puts around the date label */
 [data-testid="stSidebar"] [data-testid="stDateInput"] > label,
-[data-testid="stSidebar"] [data-testid="stDateInput"] div:has(> label),
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
-[data-testid="stSidebar"] [class*="st-emotion-cache"] label,
-[data-testid="stSidebar"] p:has(+ [data-testid="stDateInput"]) {{
+[data-testid="stSidebar"] [data-testid="stDateInput"] div:has(> label) {{
     background: transparent !important;
-    background-color: transparent !important;
     border: none !important;
     box-shadow: none !important;
-}}
-/* Target the specific StreamLit label container in sidebar */
-[data-testid="stSidebar"] label[data-testid="stWidgetLabel"],
-[data-testid="stSidebar"] .stDateInput label[data-testid="stWidgetLabel"] {{
-    background: transparent !important;
-    background-color: transparent !important;
-    color: {TE_ORANGE} !important;
-    font-family: 'Barlow Condensed', sans-serif !important;
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    letter-spacing: 3px !important;
-    text-transform: uppercase !important;
 }}
 
 /* ══════════════════════════════════════════════════════════
@@ -3208,23 +3164,11 @@ with tab_qual:
         _filter_machine = st.selectbox("Machine ID", options=_machines_avail,
                                        index=0, key="q_filter_machine")
     with _fcol2:
-        _dates_raw   = pd.to_datetime(_df_stops[COL_DATE], errors="coerce").dropna()
-        _dmin_stop   = _dates_raw.min().date() if len(_dates_raw) else date.today()
-        _dmax_stop   = _dates_raw.max().date() if len(_dates_raw) else date.today()
-        _filter_date_input = st.date_input(
-            "Exact Date",
-            value=None,
-            min_value=_dmin_stop,
-            max_value=_dmax_stop,
-            format="DD/MM/YYYY",
-            key="q_filter_date",
-            help="Pick a date to filter stops. Leave empty to show all."
-        )
-        # None = no filter; a date object = filter to that day
-        _filter_date_str = (
-            _filter_date_input.strftime("%m/%d/%Y")
-            if _filter_date_input is not None else "All"
-        )
+        _dates_raw    = pd.to_datetime(_df_stops[COL_DATE], errors="coerce").dropna()
+        _dates_avail  = sorted(_dates_raw.dt.date.unique())
+        _date_options = ["All"] + [d.strftime("%m/%d/%Y") for d in _dates_avail]
+        _filter_date_str = st.selectbox("Exact Date", options=_date_options,
+                                         index=0, key="q_filter_date")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
